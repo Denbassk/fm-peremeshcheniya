@@ -24,3 +24,8 @@ dist/
 __pycache__/
 *.pyc
 *.spec.bak
+# --- артефакты PyInstaller и старые копии: история теперь в git ---
+**/_build/*
+!**/_build/box_check.py
+!**/_build/box_check.csv
+**/_СОСТОЯНИЕ/backup/
