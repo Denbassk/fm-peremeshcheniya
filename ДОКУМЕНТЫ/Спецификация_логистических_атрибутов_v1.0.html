@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>:root{color-scheme:light dark}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+</head><body>
+<title>Спецификация логистических атрибутов</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+:root{
+  --paper:#F3F4F0; --surface:#FBFBF9; --surface-2:#EBEDE7;
+  --ink:#171B1A; --ink-2:#464D4B; --ink-3:#6F7774;
+  --rule:#D7DBD3; --rule-2:#B6BDB3;
+  --accent:#1F5F5B; --accent-soft:#DDE8E5; --accent-ink:#123B38;
+  --err:#9C2B24; --err-soft:#F2DFDD;
+  --warn:#8F650C; --warn-soft:#F1E7D2;
+  --ok:#2E6B3E; --ok-soft:#DDE9DE;
+  --shadow:0 1px 0 rgba(23,27,26,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#101312; --surface:#171B1A; --surface-2:#1E2322;
+    --ink:#E8EBE6; --ink-2:#B3BAB5; --ink-3:#868E8A;
+    --rule:#2A302E; --rule-2:#3C4340;
+    --accent:#6FBAB0; --accent-soft:#1A2E2C; --accent-ink:#9BD4CB;
+    --err:#E28A82; --err-soft:#31201F;
+    --warn:#D5A54B; --warn-soft:#2E2718;
+    --ok:#7CBB8D; --ok-soft:#1C2A20;
+    --shadow:0 1px 0 rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#101312; --surface:#171B1A; --surface-2:#1E2322;
+  --ink:#E8EBE6; --ink-2:#B3BAB5; --ink-3:#868E8A;
+  --rule:#2A302E; --rule-2:#3C4340;
+  --accent:#6FBAB0; --accent-soft:#1A2E2C; --accent-ink:#9BD4CB;
+  --err:#E28A82; --err-soft:#31201F;
+  --warn:#D5A54B; --warn-soft:#2E2718;
+  --ok:#7CBB8D; --ok-soft:#1C2A20;
+  --shadow:0 1px 0 rgba(0,0,0,.4);
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"IBM Plex Serif",Georgia,"Times New Roman",serif;
+  font-size:16.5px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4,.sans{font-family:"IBM Plex Sans","Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+code,.mono,kbd{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+.wrap{max-width:1240px;margin:0 auto;padding:0 24px 96px}
+
+/* ---------- шапка ---------- */
+.masthead{border-bottom:2px solid var(--ink);padding:38px 0 18px;margin-bottom:34px}
+.eyebrow{
+  font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:500;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--accent);
+}
+h1{
+  font-size:clamp(30px,4.4vw,46px);line-height:1.06;font-weight:700;
+  letter-spacing:-.022em;margin:.28em 0 .18em;text-wrap:balance;max-width:19ch;
+}
+.subtitle{color:var(--ink-2);font-size:18px;max-width:62ch;margin:0 0 22px}
+.meta{
+  display:flex;flex-wrap:wrap;gap:0 34px;row-gap:10px;
+  font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3);
+  letter-spacing:.02em;padding-top:14px;border-top:1px solid var(--rule);
+}
+.meta b{color:var(--ink);font-weight:600}
+
+/* ---------- каркас ---------- */
+.frame{display:block}
+@media(min-width:1080px){
+  .frame{display:grid;grid-template-columns:238px minmax(0,1fr);gap:56px;align-items:start}
+  .rail{position:sticky;top:24px;max-height:calc(100vh - 48px);overflow-y:auto}
+}
+.rail{font-family:"IBM Plex Sans",sans-serif;font-size:13.5px}
+.rail h4{
+  font-family:"IBM Plex Mono",monospace;font-size:10.5px;font-weight:600;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);
+  margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--rule);
+}
+.rail ol{list-style:none;margin:0 0 26px;padding:0;display:flex;flex-direction:column;gap:2px}
+.rail a{
+  display:grid;grid-template-columns:22px 1fr;gap:6px;
+  color:var(--ink-2);text-decoration:none;padding:5px 6px;border-radius:3px;line-height:1.34;
+}
+.rail a:hover{background:var(--surface-2);color:var(--ink)}
+.rail a span:first-child{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--accent);padding-top:1px}
+.railnote{
+  font-size:12px;line-height:1.5;color:var(--ink-3);
+  border-left:2px solid var(--rule-2);padding-left:11px;
+}
+.railnote b{color:var(--ink-2);font-weight:600}
+
+/* ---------- секции ---------- */
+section{margin:0 0 62px;scroll-margin-top:20px}
+h2{
+  font-size:12px;font-weight:600;letter-spacing:.15em;text-transform:uppercase;
+  font-family:"IBM Plex Mono",monospace;color:var(--accent);
+  margin:0 0 6px;
+}
+.h2big{
+  font-size:clamp(22px,2.6vw,29px);font-weight:600;letter-spacing:-.018em;line-height:1.16;
+  margin:0 0 8px;text-wrap:balance;max-width:26ch;
+}
+.lede{color:var(--ink-2);max-width:66ch;margin:0 0 26px;font-size:16.5px}
+h3{
+  font-size:16px;font-weight:600;letter-spacing:-.006em;margin:34px 0 10px;
+  max-width:56ch;
+}
+p{max-width:68ch;margin:0 0 14px}
+
+/* ---------- нумерованное правило ---------- */
+.rule{
+  display:grid;grid-template-columns:52px minmax(0,1fr);gap:16px;
+  padding:16px 0;border-top:1px solid var(--rule);
+}
+.rule:last-of-type{border-bottom:1px solid var(--rule)}
+.rn{
+  font-family:"IBM Plex Mono",monospace;font-size:12.5px;font-weight:600;
+  color:var(--accent);padding-top:3px;letter-spacing:.01em;
+}
+.rule .body>*:last-child{margin-bottom:0}
+.rule p{max-width:64ch}
+
+/* ---------- пометки ---------- */
+.tag{
+  font-family:"IBM Plex Mono",monospace;font-size:9.5px;font-weight:600;
+  letter-spacing:.1em;text-transform:uppercase;padding:2px 6px;border-radius:2px;
+  vertical-align:.12em;white-space:nowrap;
+}
+.t-obs{background:var(--accent-soft);color:var(--accent-ink)}
+.t-int{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--rule-2)}
+.t-tbc{background:var(--warn-soft);color:var(--warn)}
+.t-new{background:var(--ok-soft);color:var(--ok)}
+
+code{
+  font-size:.86em;background:var(--surface-2);padding:1px 5px;border-radius:2px;
+  color:var(--ink);font-weight:500;
+}
+.bc{letter-spacing:.01em;white-space:nowrap}
+b,strong{font-weight:600}
+
+/* ---------- таблицы ---------- */
+.tw{overflow-x:auto;margin:20px 0 24px;border:1px solid var(--rule);border-radius:3px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-family:"IBM Plex Sans",sans-serif;font-size:13.2px;line-height:1.45}
+th{
+  text-align:left;font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:600;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3);
+  padding:10px 13px;border-bottom:1px solid var(--rule-2);white-space:nowrap;
+  background:var(--surface-2);
+}
+td{padding:9px 13px;border-bottom:1px solid var(--rule);vertical-align:top;color:var(--ink-2)}
+tr:last-child td{border-bottom:none}
+td:first-child{color:var(--ink);font-weight:500}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td .mono,td code{font-size:12px}
+.tnote{font-size:12.5px;color:var(--ink-3);margin:-14px 0 24px;max-width:68ch;font-family:"IBM Plex Sans",sans-serif}
+
+/* уровни валидации */
+.lvl{font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:600;letter-spacing:.08em;padding:2px 7px;border-radius:2px;white-space:nowrap}
+.lvl-e{background:var(--err-soft);color:var(--err)}
+.lvl-w{background:var(--warn-soft);color:var(--warn)}
+.lvl-i{background:var(--accent-soft);color:var(--accent-ink)}
+
+/* ---------- врезка ---------- */
+.callout{
+  background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);
+  padding:16px 20px;margin:22px 0;border-radius:0 3px 3px 0;
+}
+.callout.alarm{border-left-color:var(--err)}
+.callout p{margin:0 0 10px;max-width:64ch;font-size:15.5px}
+.callout p:last-child{margin:0}
+.callout .ct{
+  font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:600;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--ink-3);display:block;margin-bottom:7px;
+}
+
+/* ---------- «было → стало» ---------- */
+.ba{display:flex;flex-direction:column;gap:0;margin:20px 0 8px;border-top:1px solid var(--rule)}
+.ba-row{
+  display:grid;grid-template-columns:26px minmax(0,1fr);gap:14px;
+  padding:13px 0;border-bottom:1px solid var(--rule);
+}
+.ba-n{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3);padding-top:3px}
+.ba-was,.ba-now{font-family:"IBM Plex Mono",monospace;font-size:12.4px;line-height:1.5;display:grid;grid-template-columns:60px minmax(0,1fr);gap:10px}
+.ba-was span:first-child,.ba-now span:first-child{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);padding-top:3px;font-weight:600}
+.ba-was{color:var(--ink-3)}
+.ba-now{color:var(--ink);font-weight:500;margin-top:3px}
+.ba-why{font-size:13px;color:var(--ink-2);margin-top:7px;font-family:"IBM Plex Sans",sans-serif;line-height:1.5}
+.ba-why code{font-size:11.5px}
+
+/* ---------- статус-плитки ---------- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--rule);border:1px solid var(--rule);margin:24px 0 28px;border-radius:3px;overflow:hidden}
+.tile{background:var(--surface);padding:14px 16px}
+.tile .v{font-family:"IBM Plex Sans",sans-serif;font-size:25px;font-weight:600;letter-spacing:-.02em;line-height:1.1;font-variant-numeric:tabular-nums}
+.tile .k{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);margin-top:5px;line-height:1.4}
+.tile.bad .v{color:var(--err)}
+.tile.good .v{color:var(--ok)}
+
+hr.sep{border:none;border-top:1px solid var(--rule);margin:44px 0}
+footer{border-top:2px solid var(--ink);padding-top:18px;margin-top:20px;font-family:"IBM Plex Sans",sans-serif;font-size:13px;color:var(--ink-3);max-width:70ch}
+a{color:var(--accent)}
+a:focus-visible,.rail a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">Регламент · М Фемелі Маркет · редакция 1.0</div>
+  <h1>Спецификация логистических атрибутов товара</h1>
+  <p class="subtitle">Кратность, единицы и делимость SKU для номенклатуры Торгсофт и скрипта автозаказа <code>raschet_zakaza.py</code>. Документ адресован товароведу, который заводит карточку, и разработчику, который кодирует правило: каждое правило исполнимо обоими.</p>
+  <div class="meta">
+    <span><b>Дата</b> 04.09.2026</span>
+    <span><b>Данные</b> transfer_pack_v5 (3118 SKU), 5 ведомостей 01–05.09 (34&nbsp;161 строка, 738 ШК, 36 центров учёта)</span>
+    <span><b>Формула потребности</b> не пересматривается</span>
+  </div>
+</header>
+
+<div class="frame">
+
+<nav class="rail">
+  <h4>Разделы</h4>
+  <ol>
+    <li><a href="#s1"><span>1</span><span>Модель атрибутов</span></a></li>
+    <li><a href="#s2"><span>2</span><span>Классификатор типов</span></a></li>
+    <li><a href="#s3"><span>3</span><span>Дерево решений «как определить шаг»</span></a></li>
+    <li><a href="#s4"><span>4</span><span>Стандарт наименования</span></a></li>
+    <li><a href="#s5"><span>5</span><span>Правила валидации</span></a></li>
+    <li><a href="#s6"><span>6</span><span>Реестр исключений</span></a></li>
+    <li><a href="#s7"><span>7</span><span>План миграции</span></a></li>
+    <li><a href="#s8"><span>8</span><span>Открытые вопросы</span></a></li>
+    <li><a href="#s9"><span>П</span><span>Приложение: прогон 04.09</span></a></li>
+  </ol>
+  <h4>Пометки</h4>
+  <p class="railnote"><b>набл</b> — прямое наблюдение в данных, с цифрой.<br><b>интерп</b> — вывод из наблюдения, может быть оспорен.<br><b>тбп</b> — требует подтверждения, продублировано в разделе 8.</p>
+</nav>
+
+<main>
+
+<!-- =========================== 0 =========================== -->
+<section id="s0">
+  <h2>Исходное положение</h2>
+  <div class="h2big">Что показали данные до написания регламента</div>
+  <p class="lede">Регламент опирается на живую выгрузку <code>transfer_pack_v5</code> и <code>transfer_pack_manual</code> из BigQuery, пять оборотных ведомостей за 01–05.09.2026 и два контрольных прогона расчёта. Цифры ниже — это состояние на момент написания, а не целевое состояние.</p>
+
+  <div class="tiles">
+    <div class="tile"><div class="v">3118</div><div class="k">SKU в справочнике</div></div>
+    <div class="tile bad"><div class="v">42</div><div class="k">SKU, где шаг заказа ≠ шага перемещения</div></div>
+    <div class="tile bad"><div class="v">102</div><div class="k">SKU с заполненным rel_res</div></div>
+    <div class="tile bad"><div class="v">53</div><div class="k">SKU с ошибочным типом (весовой помечен штучным)</div></div>
+    <div class="tile"><div class="v">1138</div><div class="k">SKU с n &lt; 5 (review = LOW_N)</div></div>
+    <div class="tile good"><div class="v">850</div><div class="k">SKU готовы получить короб из pack_reference</div></div>
+  </div>
+
+  <p>Два потока — заказ поставщику и перемещение РЦ&nbsp;→&nbsp;магазин — уже разведены на уровне полей (<code>step_supplier</code> и <code>order_step</code>), но фактически совпадают у 3076 SKU из 3118. <span class="tag t-obs">набл</span> В сводном заказе на 05.09 из 332 позиций комментарий «коробка неизвестна» стоит у 277, «нет в справочнике» — у 39; реальный короб отличается от шага перемещения у 31 позиции, и это уже результат ручных правок от 04.09 — до них было 6 из 336.</p>
+
+  <p><span class="tag t-int">интерп</span> Модель разделения верна, но не наполнена. Основная работа по этому регламенту — не переписать логику, а завести источник данных для ветки «заказ поставщику» и починить классификацию весового товара.</p>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 1 =========================== -->
+<section id="s1">
+  <h2>Раздел 1</h2>
+  <div class="h2big">Модель атрибутов</div>
+  <p class="lede">Каждый SKU обязан иметь перечисленные ниже поля. Три из них — <code>frac_share_sale</code>, <code>divisible</code>, <code>exclude_auto</code> — новые и вводятся этим регламентом. Поле «кратность» как единая величина упраздняется: вместо него две независимые единицы.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>Поле</th><th>Тип и диапазон</th><th>Обяз.</th><th>Что делать при отсутствии</th></tr></thead>
+    <tbody>
+      <tr><td><code>barcode</code></td><td>строка цифр, длина 8 / 12 / 13 / 14; ведущие нули значимы</td><td>да</td><td>карточка не заводится; расчёт исключает строку</td></tr>
+      <tr><td><code>pname</code></td><td>строка по шаблону раздела 4, до 120 знаков</td><td>да</td><td>карточка не заводится</td></tr>
+      <tr><td><code>unit_type</code></td><td>enum: <code>ves_plav</code> · <code>ves_fix</code> · <code>sht_delimyy</code> · <code>sht_nedelimyy</code> · <code>exclude</code></td><td>да</td><td>эвристика раздела 3, шаг 9; <code>review = NO_TYPE</code></td></tr>
+      <tr><td><code>uom</code></td><td>enum: <code>кг</code> · <code>шт</code>; выводится из <code>unit_type</code></td><td>да</td><td>вычисляется, вручную не заводится</td></tr>
+      <tr><td><code>order_step</code><br><span class="tnote" style="margin:0">единица перемещения РЦ → магазин</span></td><td>float &gt; 0. Весовой: кратно 0,1, диапазон 0,1…10,0. Штучный: целое, 1…200</td><td>да</td><td>0,1 для весового, 1 для штучного; <code>confidence = heuristic</code></td></tr>
+      <tr><td><code>step_supplier</code><br><span class="tnote" style="margin:0">единица заказа поставщику</span></td><td>float &gt; 0, всегда ≥ <code>order_step</code>. Вес: 0,2…10,0 кг. Штуки: 2…200</td><td>да</td><td>приравнивается к <code>order_step</code>, комментарий «коробка неизвестна»</td></tr>
+      <tr><td><code>unit_kg</code></td><td>float 0,05…25,0; только для весовых; справочная величина, в округление не идёт</td><td>для <code>ves_*</code></td><td>NULL; <code>step_supplier</code> тогда не выводится из веса</td></tr>
+      <tr><td><code>box_qty</code> / <code>box_kg</code></td><td>вложенность в короб: целое 2…200 шт либо float 0,2…10,0 кг</td><td>нет</td><td>NULL; ветка 3.Б останавливается на шаге «артикул»</td></tr>
+      <tr><td><code>min_q</code></td><td>float ≥ 0, ≤ 100; достоверно только при <code>n</code> ≥ 5</td><td>нет</td><td>0 — минимальная партия не применяется</td></tr>
+      <tr><td><code>divisible</code></td><td>bool; производное: <code>true</code> для <code>ves_plav</code> и <code>sht_delimyy</code></td><td>да</td><td>вычисляется, вручную не заводится</td></tr>
+      <tr><td><code>exclude_auto</code></td><td>bool + <code>exclude_reason</code> (строка); см. раздел 6</td><td>да</td><td><code>false</code></td></tr>
+      <tr><td><code>frac_share</code><br><span class="tnote" style="margin:0">целостность короба на приходе</span></td><td>float 0…1, доля дробных приходов</td><td>расчётное</td><td>NULL при <code>n</code> = 0</td></tr>
+      <tr><td><code>frac_share_sale</code> <span class="tag t-new">новое</span><br><span class="tnote" style="margin:0">делимость по продаже</span></td><td>float 0…1, доля активных строк ведомости с дробной реализацией или остатком</td><td>расчётное</td><td>NULL при <code>n_sale</code> &lt; 5 — тип берётся из <code>rel_res</code> и названия</td></tr>
+      <tr><td><code>n</code> / <code>n_sale</code></td><td>целое ≥ 0: наблюдений в приходах / активных строк ведомости</td><td>расчётное</td><td>0</td></tr>
+      <tr><td><code>src</code></td><td>enum источника: <code>manual</code> · <code>sales_stat</code> · <code>arrival_stat</code> · <code>name</code> · <code>artikul</code> · <code>heuristic</code></td><td>да</td><td><code>heuristic</code></td></tr>
+      <tr><td><code>confidence</code></td><td>enum качества значения; <code>manual</code> имеет высший приоритет</td><td>да</td><td>пусто = не подтверждено</td></tr>
+      <tr><td><code>updated_at</code> / <code>author</code></td><td>timestamp UTC / логин подтвердившего</td><td>да</td><td>дата пересчёта, автор = <code>system</code></td></tr>
+      <tr><td><code>review</code></td><td>enum: <code>OK</code> · <code>LOW_N</code> · <code>CHECK_VES_PLAV</code> · <code>TYPE_CONFLICT</code> · <code>NO_BOX</code></td><td>расчётное</td><td><code>OK</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="rule"><div class="rn">1.1</div><div class="body">
+    <p>Кратность запрещено хранить в одном поле. <code>order_step</code> и <code>step_supplier</code> — независимые величины с разной физикой: первая описывает, чем можно наполнить точку, вторая — чем отгружает поставщик. Инвариант: <code>step_supplier ≥ order_step</code> всегда. Обратное соотношение — ошибка данных, а не бизнес-случай.</p>
+    <p><span class="tag t-obs">набл</span> Живой пример пары: <code class="bc">2978950002550</code> «Пляшка пивна 0,5 л (120)» — <code>order_step = 5</code> (блок), <code>step_supplier = 120</code> (короб). Заведено вручную 04.09, автор <code>denba</code>, причина «Пляшка 0,5 л: коробка 120, блок 5».</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">1.2</div><div class="body">
+    <p><code>unit_kg</code> — справочная величина, а не единица округления. Она используется только для вывода <code>step_supplier</code> и для проверки 5.7; в формулу округления перемещения не подставляется никогда.</p>
+    <p><span class="tag t-obs">набл</span> <code>unit_kg</code> заполнен у 102 SKU из 3118: все 20 <code>ves_fix</code> и 82 из 179 <code>ves_plav</code>. У штучных — NULL повсеместно.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">1.3</div><div class="body">
+    <p>Кратность не хранится в свободном тексте названия. Названием она может быть только <em>подтверждена</em>, и то не всегда: правило 3.Б.4 описывает, когда скобке можно верить. Поля <code>k_name</code> и <code>k_transfer</code> остаются диагностическими — они фиксируют расхождение «что написано» против «что наблюдается», и служат входом проверки 5.5.</p>
+    <p><span class="tag t-obs">набл</span> Расхождение уже зафиксировано у части SKU: <code class="bc">2984670059859</code> «Серветка Тофіта 55л.б (50)» — <code>k_name = 50</code>, <code>k_transfer = 2</code>, <code>order_step = 2</code>; <code class="bc">4820234160419</code> «Запальничка Одноразова (50)» — <code>k_name = 50</code>, <code>k_transfer = 25</code>; <code class="bc">2978950009849</code> «Пакет БМВ Маленький 50 мкн (1шт)» — в названии «(1шт)», фактический шаг 100.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">1.4</div><div class="body">
+    <p>Каждое значение несёт источник и дату подтверждения. Ручное значение (<code>src = manual</code>) не пересчитывается автоматически никогда и не имеет срока давности; статистическое пересчитывается при каждом обновлении справочника. Товаровед, вносящий ручное значение, обязан заполнить <code>reason</code> — сегодня это делается, и формат уже сложился: «Пляшка 1,5 л: коробка 88, блок 5».</p>
+  </div></div>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 2 =========================== -->
+<section id="s2">
+  <h2>Раздел 2</h2>
+  <div class="h2big">Классификатор типов</div>
+  <p class="lede">Тип определяется наблюдаемым поведением товара, а не тем, как он назван. Первичный признак — делимость по продаже; вторичный, только внутри весовой ветки, — остаток от деления прихода на вес единицы.</p>
+
+  <h3>2.1. Первичный разделитель: весовой против штучного</h3>
+  <p>Эталон — оборотная ведомость, а не приходы. Если товар уходит дробью, он весовой; категории «штучный, но продаётся на развес» в сети не существует.</p>
+  <p><b>Определение <code>frac_share_sale</code>.</b> По всем строкам оборотных ведомостей за окно наблюдения строка считается <em>активной</em>, если <code>[-] реализация &gt; 0</code> или <code>на конец ≠ 0</code>. Строка считается <em>дробной</em>, если <code>|реализация − round(реализация)| &gt; 0,001</code> или <code>|на конец − round(на конец)| &gt; 0,001</code>. Тогда <code>frac_share_sale = дробные / активные</code>, и величина достоверна при <code>n_sale ≥ 5</code>.</p>
+
+  <div class="callout">
+    <span class="ct">Результат расчёта по 5 ведомостям · 738 SKU · 34 161 строка</span>
+    <p>Показатель оказался строго бимодальным. Значения распределились так: <b>639 SKU</b> в интервале 0…0,034 и <b>99 SKU</b> в интервале 0,729…1,000. <b>Между 0,034 и 0,729 нет ни одного SKU.</b> <span class="tag t-obs">набл</span></p>
+    <p>Поэтому порог выбирается не подгонкой, а посадкой в пустой зазор: <b>0,20</b>. Любое значение от 0,05 до 0,70 даёт ту же самую разбивку 99 / 639.</p>
+  </div>
+
+  <p>Ближайшая точка снизу — <code class="bc">2978950015505</code> «Пакет Майка 100 шт 1 шт»: 2 дробные строки из 60 активных, <code>frac_share_sale = 0,033</code>. Это шум учёта, и порог 0,20 его корректно отсекает. Ближайшая точка сверху — <code class="bc">4820132920221</code> «Галіція Печиво Вишня Біла Глазур 1кг»: 0,729 при 48 активных строках.</p>
+
+  <h3>2.2. Почему frac_share для этого не годится</h3>
+  <p><code>frac_share</code> считается по приходам, а делимость проявляется в продажах. Товар приезжает целым коробом и продаётся на развес — оба факта верны одновременно, и первый ничего не говорит о втором.</p>
+  <p><span class="tag t-obs">набл</span> <code class="bc">4820182062018</code> «До Бочкового Арахіс Сіль 1кг»: <code>n = 1111</code>, <code>frac_share = 0,002</code> — приходы целые; <code>frac_share_sale = 1,000</code> при 60 активных строках — продажа всегда дробная. То же у <code class="bc">4820231110011</code> «Волхов Печиво Союзне (3кг) 1 кг»: <code>n = 1952</code>, <code>frac_share = 0,001</code>, <code>frac_share_sale = 0,967</code>.</p>
+  <p>Внутри весовой ветки <code>frac_share</code> тем более бесполезен: у <code>ves_fix</code> среднее 0,991 при медиане 1,0, у <code>ves_plav</code> — 0,986 при медиане 1,0. <span class="tag t-obs">набл</span> При этом на границе «весовой / штучный» он работает отлично (медиана 0,0 у <code>sht_delimyy</code>, максимум 0,01 у <code>sht_nedelimyy</code>) — поэтому поле сохраняется, но переименовывается по смыслу: это <b>признак целостности короба на приходе</b>, а не признак делимости.</p>
+
+  <h3>2.3. Вторичный разделитель: фиксированная фасовка против развеса</h3>
+  <p><code>rel_res</code> — относительный остаток от деления суммы прихода на <code>unit_kg</code>. Если приход всегда складывается из целого числа одинаковых упаковок, остаток близок к нулю.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>Показатель</th><th class="num">ves_fix (20)</th><th class="num">ves_plav (82 с rel_res)</th></tr></thead>
+    <tbody>
+      <tr><td>rel_res, медиана</td><td class="num">0,0000</td><td class="num">0,0814</td></tr>
+      <tr><td>rel_res, 25-й процентиль</td><td class="num">0,0000</td><td class="num">0,0474</td></tr>
+      <tr><td>rel_res, 90-й процентиль</td><td class="num">0,0085</td><td class="num">0,1428</td></tr>
+      <tr><td>rel_res, максимум</td><td class="num">0,0095</td><td class="num">0,1860</td></tr>
+      <tr><td>frac_share, медиана</td><td class="num">1,000</td><td class="num">1,000</td></tr>
+      <tr><td>n, медиана</td><td class="num">154</td><td class="num">7</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="tnote">Граница по <code>rel_res</code>: 0,01. Ниже — кандидат в <code>ves_fix</code>, выше — <code>ves_plav</code>. Данные покрывают 102 SKU из 3118.</p>
+
+  <div class="callout alarm">
+    <span class="ct">rel_res — необходимое условие, но недостаточное</span>
+    <p><span class="tag t-obs">набл</span> Десять <code>ves_plav</code> лежат внутри полосы <code>ves_fix</code> (<code>rel_res ≤ 0,0095</code>), и у всех десяти <code>confidence = ponizhen_iz_ves_fix</code>. Разделило их не <code>rel_res</code>, а минимальный наблюдённый приход.</p>
+    <p><code class="bc">4820231110103</code> «Волхов Пряник з Повидлом (4кг) 1 кг»: <code>n = 1605</code>, <code>rel_res = 0,0000</code>, <code>unit_kg = 4,0</code> — по остатку это идеальная фасовка. Но <code>min_q = 0,322</code>: наблюдался приход в 322 грамма при коробе 4 кг. <span class="tag t-int">интерп</span> Короб вскрывают на РЦ, значит товар развесной, а совпадение прихода с кратностью 4 кг — следствие того, что чаще всего берут целыми коробами.</p>
+  </div>
+
+  <p><b>Итоговое правило разделения весовых.</b> <code>ves_fix</code> присваивается, когда выполняются все три условия: <code>rel_res &lt; 0,01</code>; <code>min_q ≥ unit_kg × 0,9</code>; и не менее 95 % строк <code>[+] перемещение</code> кратны шагу с допуском 1 %. Иначе — <code>ves_plav</code> с шагом 0,1, а <code>unit_kg</code> сохраняется как справочная величина для вывода <code>step_supplier</code>.</p>
+
+  <p><span class="tag t-obs">набл</span> Третье условие добавлено потому, что без него правило «<code>ves_fix</code> не дробится» ложно с первой строки: по 5 ведомостям кратны шагу 59 из 70 строк перемещения <code>ves_fix</code> (84 %), и оба нарушителя — сулугуні. <code class="bc">2984670061364</code> «СУЛУГУНІ Сухий Рваний 1кг» при шаге 0,510 перемещается по 1,026 и 2,062; <code class="bc">2984670061371</code> «СУЛУГУНІ Сухий Копчений Нитка 1кг» при шаге 1,026 — по 1,028, 1,036. <span class="tag t-int">интерп</span> 0,510 и 1,026 — это средний вес нитки, а не норматив упаковки; оба SKU переводятся в <code>ves_plav</code>.</p>
+
+  <h3>2.4. Определения четырёх типов</h3>
+
+  <div class="rule"><div class="rn">2.4.1<br>ves_plav</div><div class="body">
+    <p><b>Весовой плавающий.</b> <code>frac_share_sale ≥ 0,20</code>, и не выполнены условия <code>ves_fix</code>. Шаг перемещения 0,1 кг; дробится свободно. Заказ поставщику — целыми коробами, если <code>box_kg</code> известен, иначе по 0,1 кг.<br>
+    Примеры: <code class="bc">4820182062018</code> До Бочкового Арахіс Сіль 1кг (<code>frac_share_sale</code> 1,000 · <code>n_sale</code> 60); <code class="bc">2984670057091</code> Теплі Моря М*ясо Курки Пікантне Сол/Суш 1 кг (1,000 · 60); <code class="bc">4820182064708</code> До Бочкового Анчоуси 1кг (10) — <code>box_kg</code> 10,0 при <code>unit_kg</code> 1,186.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">2.4.2<br>ves_fix</div><div class="body">
+    <p><b>Весовой фиксированной фасовки.</b> Все три условия 2.3 выполнены. Шаг перемещения = вес фасовки; не дробится ни при заказе, ни при перемещении; порог неполной упаковки 0,34.<br>
+    Примеры: <code class="bc">4820132920924</code> Галіція Пряник Чорний Принц (2,4кг в ящ) 1кг — <code>rel_res</code> 0,0000, <code>min_q</code> 2,4 = <code>unit_kg</code>, шаг 2,4; <code class="bc">4820002306674</code> ХБФ Трубочки з Молоком 1 кг — <code>rel_res</code> 0,0000, <code>n</code> 525, шаг 3,3.<br>
+    Из 20 текущих <code>ves_fix</code> два SKU (сулугуні) подлежат переводу в <code>ves_plav</code> по правилу 2.3.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">2.4.3<br>sht_delimyy</div><div class="body">
+    <p><b>Штучный делимый.</b> <code>frac_share_sale &lt; 0,20</code> при <code>n_sale ≥ 5</code>, и товар не входит в список неделимых. Шаг перемещения 1 шт, заказ по чистой потребности. Заказ поставщику — коробом из правила 3.Б.2, если он выведен, иначе по 1 шт.<br>
+    Это подавляющая масса: 2847 SKU в справочнике, 556 из 738 в ведомостях.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">2.4.4<br>sht_nedelimyy</div><div class="body">
+    <p><b>Штучный неделимый — шоубокс, блок, лоток.</b> Присваивается только при подтверждении: либо ручная запись в <code>transfer_pack_manual</code>, либо совпадение <code>min_q</code> с числом в скобках названия при <code>n ≥ 5</code>, либо доказанная некруглость приходов. Не дробится при перемещении; порог неполной упаковки 0,34.<br>
+    Примеры: <code class="bc">8714599102565</code> Кава Якобз Монарх 3в1 15гр — шаг 24, <code>n</code> 349; <code class="bc">4823003216089</code> Сигарети ЛМ Фест Блу 20шт — шаг 5, <code>n</code> 293; <code class="bc">8682091104120</code> Монжар Мармеладна Палочка Lico Rico Mix — шаг 150, ручная запись, автор <code>denis</code>.</p>
+    <p><span class="tag t-obs">набл</span> Реальная неделимость соблюдается на 91 % (315 из 345 строк перемещения). Все 30 нарушений — Пляшка пивна и Пакет Фемелі: при шаге 120 / 90 / 70 / 54 фактически перемещают 9, 26, 40, 49, 50, 100, 108, 150 штук. Именно по этим SKU 04.09 и заведены ручные блоки, что подтверждает правило 3.А.2.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">2.4.5<br>exclude</div><div class="body">
+    <p><b>Вне автозаказа.</b> Пятое значение <code>unit_type</code>, вводимое этим регламентом. Позиция читается расчётом, участвует в сверке баланса, но не попадает ни в файл магазина, ни в сводный заказ поставщику. Ведение — только через <code>transfer_pack_manual</code>; см. раздел 6.</p>
+  </div></div>
+
+  <h3>2.5. Что делать при недостатке данных</h3>
+  <p>При <code>n_sale &lt; 5</code> показатель <code>frac_share_sale</code> не рассчитывается, и тип определяется по цепочке раздела 3, а <code>review</code> получает значение <code>LOW_N</code>. <span class="tag t-obs">набл</span> Таких SKU 79 из 738 в ведомостях и 1138 из 3118 в справочнике по приходам. Позиция с <code>LOW_N</code> заказывается, но её тип считается неподтверждённым и попадает в еженедельный разбор.</p>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 3 =========================== -->
+<section id="s3">
+  <h2>Раздел 3</h2>
+  <div class="h2big">Дерево решений «как определить шаг»</div>
+  <p class="lede">Две независимые ветки. Ветка А даёт <code>order_step</code> — чем наполняем точку. Ветка Б даёт <code>step_supplier</code> — чем закупаем. Обе проходятся сверху вниз, первое сработавшее правило останавливает обход.</p>
+
+  <h3>Ветка А. Шаг перемещения РЦ → магазин</h3>
+
+  <div class="rule"><div class="rn">3.А.1</div><div class="body">
+    <p><b>Ручное переопределение.</b> Если ШК есть в <code>transfer_pack_manual</code> — берётся его <code>order_step</code>, обход завершён. Стоп-факторов нет: ручное значение выше любой статистики.<br>
+    <span class="tag t-obs">набл</span> Сейчас в таблице 15 записей: 10 внесены <code>denba</code> 04.09 (бутылки, зажигалки, пакеты) и 5 — <code>denis</code> того же дня (шоубоксы Монжар).</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.А.2</div><div class="body">
+    <p><b>Блочное правило по категории.</b> Если название содержит «пакет» — шаг 25; «пляшка», «бутыл», «запальнич», «зажигалк» — шаг 5. Скобка в названии этих товаров всегда означает приходной короб, а не единицу перемещения.<br>
+    Стоп-фактор: правило не применяется, если ШК уже перекрыт вручную (3.А.1).<br>
+    <span class="tag t-obs">набл</span> Обоснование в данных: <code class="bc">2978950002567</code> «Пляшка пивна 1 л (90)» перемещали партиями 100 и 108 шт при заявленном шаге 90 — то есть короб вскрывают; <code class="bc">2978950039006</code> «Пакет Фемелі M (50)» перемещали по 49.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.А.3</div><div class="body">
+    <p><b>Делимость по продаже.</b> При <code>n_sale ≥ 5</code>: если <code>frac_share_sale ≥ 0,20</code> — товар весовой, шаг 0,1 кг (либо вес фасовки, если выполнено 2.3); иначе штучный, шаг 1.<br>
+    Стоп-фактор: при <code>n_sale &lt; 5</code> правило пропускается, обход идёт дальше.<br>
+    <span class="tag t-int">интерп</span> Этот шаг заменяет собой сегодняшний рантайм-костыль <code>WEIGHT_CONFLICTS</code>, который на прогоне 05.09 переводил на шаг 0,1 сорок девять позиций «на лету». После миграции справочник обязан отдавать правильный тип сам, а сохранившийся костыль становится сигналом ошибки данных, а не рабочим механизмом.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.А.4</div><div class="body">
+    <p><b>Тип из справочника.</b> Берётся <code>unit_type</code> и соответствующий шаг: <code>ves_plav</code> → 0,1; <code>ves_fix</code> → вес фасовки; <code>sht_nedelimyy</code> → размер шоубокса; <code>sht_delimyy</code> → 1.<br>
+    Стоп-фактор: если <code>review = TYPE_CONFLICT</code>, значение не применяется — приоритет у 3.А.3.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.А.5</div><div class="body">
+    <p><b>Минимальная партия.</b> Рассчитанное количество поднимается до <code>min_q</code>, если: <code>n ≥ 5</code>, <code>min_q ≤ 100</code>, товар не подпадает под 3.А.2, и для <code>sht_delimyy</code> дополнительно — значение <code>min_q</code> встречается числом в скобках названия.<br>
+    <span class="tag t-obs">набл</span> Последняя оговорка гасит реальные ложные срабатывания: <code class="bc">2978950015567</code> «Стакан 250 мл 1 шт» — <code>min_q</code> 50 при <code>n</code> 8; <code class="bc">2978950015819</code> «Тарілка 205 Андрекс 1 шт» — <code>min_q</code> 100 при <code>n</code> 7; <code class="bc">2978950023876</code> «Монжар Браслет 8гр» — <code>min_q</code> 53 при <code>n</code> 7. Ни в одном названии нет подтверждающей скобки, и во всех трёх случаях <code>min_q</code> — единичная крупная поставка, а не норма.<br>
+    <span class="tag t-obs">набл</span> На прогоне 05.09 из 3118 записей <code>min_q</code> применён у 82 и отброшен как недостоверный у 1897.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.А.6</div><div class="body">
+    <p><b>Кратность из названия.</b> Применяется только если ШК отсутствует в справочнике. Стиковый кофе и товар с признаком «стік» / «Nв1» при целой скобке 2…100 получают шаг = скобке; «упаковка N шт» и «(×N)» дают шаг 1, поскольку сама карточка уже является упаковкой.<br>
+    <span class="tag t-obs">набл</span> На 05.09 сработало для 3 SKU: <code class="bc">2938080084499</code> и <code class="bc">2938080084505</code> — Кава Мак Кофе 3в2 16г (20), шаг 20; <code class="bc">8711000609415</code> — Maxwell House 3в1 Origin 18г, шаг 30 из артикула.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.А.7</div><div class="body">
+    <p><b>Эвристика.</b> Дробь в ведомости → 0,1 кг; иначе 1 шт. <code>src = heuristic</code>, <code>review = NO_TYPE</code>, позиция попадает в еженедельный разбор.</p>
+  </div></div>
+
+  <h3>Ветка Б. Шаг заказа поставщику</h3>
+
+  <div class="rule"><div class="rn">3.Б.1</div><div class="body">
+    <p><b>Ручное переопределение.</b> <code>step_supplier</code> из <code>transfer_pack_manual</code>. Обход завершён.<br>
+    <span class="tag t-obs">набл</span> Заполнено у 9 из 15 ручных записей; у <code class="bc">6945230460313</code> «Запальничка Турбо» короб не известен и поле оставлено пустым — это корректное состояние, а не пропуск.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.Б.2</div><div class="body">
+    <p><b>Статистика приходов (<code>pack_reference.k_gcd</code>).</b> Значение принимается как <code>step_supplier</code>, если одновременно: наблюдений <code>n ≥ 5</code>; <code>1 &lt; k_gcd ≤ 24</code>; и <code>share_gcd ≥ 0,90</code>, то есть не менее 90 % приходов делятся на этот шаг нацело. Всё, что крупнее 24, вносится только вручную через 3.Б.1.</p>
+    <p><span class="tag t-obs">набл</span> Проверка правила на живой таблице: <code>pack_reference</code> содержит 2171 SKU, критерию удовлетворяют <b>850</b>. Из них <b>539</b> сегодня помечены <code>sht_delimyy</code> со <code>step_supplier = 1</code> — то есть правило немедленно даёт им реальный короб. Ещё 301 SKU отсутствует в <code>transfer_pack_v5</code>. Распределение шагов: 6 → 177 SKU, 10 → 164, 12 → 121, 5 → 92, 2 → 98, 4 → 63, 3 → 71, 24 → 12.</p>
+    <p><span class="tag t-int">интерп</span> Один этот шаг поднимает наполненность ветки заказа с 42 SKU (1,3 %) до примерно 580 (18,6 %). Это главный измеримый выигрыш регламента.</p>
+    <p>Стоп-факторы: <code>tier = E_malo_dannyh</code> (809 SKU) и <code>E_net_kratnosti</code> (508 SKU) не принимаются; <code>k_gcd &gt; 24</code> — 53 SKU при <code>share_gcd ≥ 0,9</code> — только вручную.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.Б.3</div><div class="body">
+    <p><b>Короб из веса единицы.</b> Для весовых: если <code>box_kg</code> известен и лежит в 0,2…10,0 кг — это <code>step_supplier</code>.<br>
+    <span class="tag t-obs">набл</span> Так заполнены все 42 существующие пары «шаг ≠ шаг»: <code class="bc">4823105813452</code> АВК Бам-Бук (4,4) → 4,4 кг; <code class="bc">2984670058265</code> Безлюдовський Ковбаса Президентська (0,23) → 0,23 кг.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.Б.4</div><div class="body">
+    <p><b>Короб из скобки в названии.</b> Скобке верят только если: число попадает в диапазон правдоподобия (вес 0,2…10,0 кг; штуки 2…200); название не подпадает под 3.А.2; и для штучного — значение ≤ 24 либо подтверждено вручную.<br>
+    Стоп-факторы, подтверждённые данными <span class="tag t-obs">набл</span>: <code class="bc">7638900083040</code> «Батарейки Енерджайзер Літіум (2032)» — 2032 это типоразмер CR2032, вне диапазона, отбрасывается; <code class="bc">2984670073701</code> «Кеш'ю Смажений Солоний (180) 1кг» — 180 при весовом типе вне 0,2…10, отбрасывается; <code class="bc">4823077613630</code> «Рошен Батончик 43 гр(180)» — 180 &gt; 24, только вручную.<br>
+    Из 202 <code>sht_delimyy</code> со скобкой в названии шаг перемещения остался равен 1 у всех 202 — правило соблюдается сегодня и сохраняется.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.Б.5</div><div class="body">
+    <p><b>Артикул.</b> Последний источник и самый ненадёжный. Число принимается как короб только если: для веса — <code>≤ 10</code> и есть «кг» в названии; для штук — целое <code>≤ 200</code>. Всё, что больше 1000, — цена в гривнах.<br>
+    <span class="tag t-obs">набл</span> В 5 ведомостях артикул заполнен у 298 SKU из 739; дробный разделитель — у 80. В одной колонке одновременно живут вес короба (<code>4,4</code> у Бам-Бука; <code>2,200</code> у АВК Королівський Шарм; <code>4,00</code> у Волхова) и цена (<code>644,94</code> у Глобино Брауншвейгської; <code>122,7</code> у Глобино На дровах; <code>88,08</code> у Лікарської). Числовых &gt; 1000 — 30 штук.<br>
+    Отдельный стоп-фактор: артикул похож на короб, но ему не равен. У Пляшки пивної 0,5 л (120) артикул 150, у 1 л (90) — 100, у 1,5 л (88) — 90, у 3 л (54) — 50. <span class="tag t-int">интерп</span> Похоже на цену или на округлённую норму паллеты; как источник кратности артикул для этой группы непригоден.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.Б.6</div><div class="body">
+    <p><b>Короб неизвестен.</b> <code>step_supplier = order_step</code>, <code>review = NO_BOX</code>, в сводном файле — комментарий «коробка неизвестна».<br>
+    <span class="tag t-obs">набл</span> Сегодня это состояние у 277 из 332 позиций сводного заказа плюс 39 позиций «нет в справочнике» — 95 % файла.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">3.Б.7</div><div class="body">
+    <p><b>Ограничение разумности заказа.</b> Позиция не заказывается автоматически и уходит в ручной разбор, если излишек округления превышает два короба либо тридцатидневную потребность.<br>
+    <span class="tag t-obs">набл</span> Случай, ради которого правило вводится: <code class="bc">4820182064708</code> «До Бочкового Анчоуси 1кг (10)» на 05.09 — потребность 1,2 кг по двум магазинам, короб 10 кг, заказ 10 кг, излишек 8,8 кг. Короб определён верно, порог 10 кг не нарушен; отсутствовало именно ограничение по запасу.</p>
+  </div></div>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 4 =========================== -->
+<section id="s4">
+  <h2>Раздел 4</h2>
+  <div class="h2big">Стандарт наименования номенклатуры</div>
+  <p class="lede">Название перестаёт быть носителем кратности и становится носителем идентификации. Всё, что может быть полем, должно быть полем.</p>
+
+  <p><b>Шаблон:</b> <code>Производитель · Категория · Наименование · Характеристика · Вес/Объём · (короб)</code>, элементы разделяются пробелом, порядок обязателен.</p>
+
+  <div class="rule"><div class="rn">4.1</div><div class="body">
+    <p><b>Вес вне скобок — единица ценообразования.</b> Пишется как «1 кг» с пробелом. Для развесного товара это всегда «1 кг» и ничто иное; вес фасовки в названии не указывается — он живёт в <code>unit_kg</code>.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">4.2</div><div class="body">
+    <p><b>Скобка — короб поставщика, и только он.</b> Единица измерения внутри скобки обязательна: <code>(4,4 кг)</code>, <code>(24 шт)</code>. Скобка без единицы запрещена: <code>(2,2)</code>, <code>(180)</code>, <code>(50)</code> — недопустимые формы. Одна скобка на название; конструкции вида <code>(Мал)(200)</code> запрещены.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">4.3</div><div class="body">
+    <p><b>Шоубокс не пишется в названии.</b> Единица перемещения — поле <code>order_step</code>. В названии допускается только короб. Скобка с числом никогда не читается расчётом как шаг заказа.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">4.4</div><div class="body">
+    <p><b>Запрещено в названии:</b> размер батареи, номер комплекта, объём в мл и любое иное число в скобках, не являющееся коробом; слова «Упаковка N шт» как способ отличить карточку-дубль; акционные суффиксы «АКЦІЯ» и подобные — они создают новую карточку и рвут историю; двойные и тройные пробелы.</p>
+    <p><b>Запрещено в артикуле:</b> цена в любом виде; вес короба; любые данные, кроме собственно артикула поставщика. Поле, содержащее число с дробным разделителем, при миграции очищается.</p>
+  </div></div>
+
+  <h3>4.5. Было → стало на реальных позициях</h3>
+
+  <div class="ba">
+    <div class="ba-row"><div class="ba-n">1</div><div>
+      <div class="ba-was"><span>было</span><span>Волхов Пряник з Повидлом (4кг) 1 кг</span></div>
+      <div class="ba-now"><span>стало</span><span>Волхов Пряник з Повидлом ваг. 1 кг (4 кг)</span></div>
+      <div class="ba-why"><code class="bc">4820231110103</code> · порядок элементов приведён к шаблону, в скобку добавлен пробел. <code>unit_type</code> = ves_plav, <code>order_step</code> 0,1, <code>step_supplier</code> 4,0, <code>unit_kg</code> 4,0.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">2</div><div>
+      <div class="ba-was"><span>было</span><span>АВК Ваф.Трубочки Бам-Бук Згущене Молоко 1кг (4,4)</span></div>
+      <div class="ba-now"><span>стало</span><span>АВК Вафельні трубочки Бам-Бук Згущене молоко ваг. 1 кг (4,4 кг)</span></div>
+      <div class="ba-why"><code class="bc">4823105813452</code> · сокращение «Ваф.» раскрыто, в скобку добавлена единица. Артикул <code>4,4</code> очищается — вес переезжает в <code>box_kg</code>.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">3</div><div>
+      <div class="ba-was"><span>было</span><span>Серветка Тофіта 55л.б (50)</span></div>
+      <div class="ba-now"><span>стало</span><span>Тофіта Серветка паперова 55 л/б 1 шт (50 шт)</span></div>
+      <div class="ba-why"><code class="bc">2984670059859</code> · производитель вынесен вперёд. Скобка остаётся коробом, но шаг перемещения 2 живёт в поле: <code>k_name</code> 50 против <code>k_transfer</code> 2 — расхождение, которое название больше не должно скрывать.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">4</div><div>
+      <div class="ba-was"><span>было</span><span>Пакет БМВ Маленький 50 мкн (1шт)</span></div>
+      <div class="ba-now"><span>стало</span><span>Пакет БМВ малий 50 мкн 1 шт (100 шт)</span></div>
+      <div class="ba-why"><code class="bc">2978950009849</code> · «(1шт)» было ложной скобкой при фактическом шаге 100. Значение короба 100 <span class="tag t-tbc">тбп</span> — выведено из <code>min_q</code> = 100 при <code>n</code> = 642, не из документа поставщика.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">5</div><div>
+      <div class="ba-was"><span>было</span><span>Батарейки Енерджайзер Літіум (2032) 1 шт</span></div>
+      <div class="ba-now"><span>стало</span><span>Енерджайзер Батарейка літієва CR2032 1 шт</span></div>
+      <div class="ba-why"><code class="bc">7638900083040</code> · типоразмер выведен из скобок, чтобы парсер не читал его как короб. <code>k_name</code> = 2032 после переименования обнуляется.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">6</div><div>
+      <div class="ba-was"><span>было</span><span>Запальничка Одноразова (50)</span></div>
+      <div class="ba-now"><span>стало</span><span>Запальничка одноразова 1 шт (50 шт)</span></div>
+      <div class="ba-why"><code class="bc">4820234160419</code> · скобка = короб 50. Блок перемещения 5 (ручная запись 04.09) и наблюдаемый <code>k_transfer</code> 25 остаются в полях, в название не выносятся.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">7</div><div>
+      <div class="ba-was"><span>было</span><span>Пакет Фемелі S 30*50(Мал)(200) 1 шт</span></div>
+      <div class="ba-now"><span>стало</span><span>Пакет Фемелі S малий 30×50 1 шт (200 шт)</span></div>
+      <div class="ba-why"><code class="bc">2978950039013</code> · две скобки схлопнуты в одну, размерность записана знаком умножения. <code>order_step</code> 25 по ручной записи, <code>step_supplier</code> 200.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">8</div><div>
+      <div class="ba-was"><span>было</span><span>СУЛУГУНІ Сухий Рваний 1кг</span></div>
+      <div class="ba-now"><span>стало</span><span>Сулугуні сухий рваний ваг. 1 кг</span></div>
+      <div class="ba-why"><code class="bc">2984670061364</code> · капслок снят. Короб не указывается — его нет; <code>unit_kg</code> 0,510 остаётся справочным средним весом нитки, тип меняется на ves_plav по правилу 2.3.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">9</div><div>
+      <div class="ba-was"><span>было</span><span>ХБФ Цукерки Ананасні 1 кг (1)</span></div>
+      <div class="ba-now"><span>стало</span><span>ХБФ Цукерки Ананасні ваг. 1 кг</span></div>
+      <div class="ba-why"><code class="bc">2978950033424</code> · скобка «(1)» не несёт смысла и удаляется. <code>frac_share_sale</code> 0,946 при 56 активных строках — товар весовой, сегодня помечен штучным.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">10</div><div>
+      <div class="ba-was"><span>было</span><span>Агропром Стакан Паперовий Малюнок 175 мл 1 шт<br>Агропром Стакан Паперовий Малюнок 175 мл Упаковка 50 шт</span></div>
+      <div class="ba-now"><span>стало</span><span>Агропром Стакан паперовий з малюнком 175 мл 1 шт (50 шт)</span></div>
+      <div class="ba-why"><code class="bc">2978950015550</code> ведущая · <code class="bc">2978950003595</code> закрывается через <code>unit_type = exclude</code>. Основание выбора ведущей: по ней идут приход 373 и реализация 428 за 5 дней, по второй — только перемещение.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">11</div><div>
+      <div class="ba-was"><span>было</span><span>Рошен  Батончик Мол-Шок з Крем-Брюле 43 гр(180)</span></div>
+      <div class="ba-now"><span>стало</span><span>Рошен Батончик молочно-шоколадний з крем-брюле 43 г (180 шт)</span></div>
+      <div class="ba-why"><code class="bc">4823077613630</code> · двойной пробел убран, сокращение раскрыто, скобка получила единицу. Шаг перемещения остаётся 1: 180 — транспортная коробка, а не единица заказа.</div>
+    </div></div>
+
+    <div class="ba-row"><div class="ba-n">12</div><div>
+      <div class="ba-was"><span>было</span><span>Галіція Печиво Галіція Апельсин Біла Глазур 1кг АКЦІЯ</span></div>
+      <div class="ba-now"><span>стало</span><span>Галіція Печиво Апельсин у білій глазурі ваг. 1 кг</span></div>
+      <div class="ba-why"><code class="bc">2984670081942</code> · дубль производителя в названии и акционный суффикс удалены. Карточка отсутствует в справочнике и даёт дробь в ведомости — типичный источник «нет в справочнике».</div>
+    </div></div>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 5 =========================== -->
+<section id="s5">
+  <h2>Раздел 5</h2>
+  <div class="h2big">Правила валидации</div>
+  <p class="lede">Проверки выполняются при заведении карточки товароведом и при каждом пересчёте справочника. Уровень «ошибка» блокирует заказ по позиции, «предупреждение» пропускает позицию, но ставит её в очередь разбора.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>№</th><th>Проверка</th><th>Уровень</th><th>Условие срабатывания</th><th>Действие ответственного</th></tr></thead>
+    <tbody>
+      <tr><td>5.1</td><td>Формат штрихкода</td><td><span class="lvl lvl-e">ошибка</span></td><td>не цифры, либо длина вне 8 / 12 / 13 / 14 после восстановления ведущих нулей</td><td>Товаровед сверяет код с упаковкой и правит в Торгсофте</td></tr>
+      <tr><td>5.2</td><td>Контрольная цифра EAN</td><td><span class="lvl lvl-w">предупр.</span></td><td>контрольная не сходится и префикс не входит в внутренние (2978, 2984, 2222, 20, 21)</td><td>Разработчик исключает внутренние префиксы из проверки; товаровед разбирает остаток</td></tr>
+      <tr><td>5.3</td><td>Дубль карточки</td><td><span class="lvl lvl-e">ошибка</span></td><td>одно название на два ШК, либо пара «X 1 шт» / «X Упаковка N шт»</td><td>Товаровед назначает ведущую карточку, вторая получает <code>exclude</code></td></tr>
+      <tr><td>5.4</td><td>Конфликт «тип ↔ дробность»</td><td><span class="lvl lvl-e">ошибка</span></td><td><code>unit_type</code> = sht_* и <code>frac_share_sale ≥ 0,20</code> при <code>n_sale ≥ 5</code></td><td>Автопересчёт типа в ves_plav; <code>review = TYPE_CONFLICT</code> до подтверждения</td></tr>
+      <tr><td>5.5</td><td>Скобка против наблюдения</td><td><span class="lvl lvl-w">предупр.</span></td><td><code>k_name ≠ k_transfer</code>, либо скобка вне диапазона правдоподобия</td><td>Товаровед переименовывает по разделу 4 либо вносит ручную запись</td></tr>
+      <tr><td>5.6</td><td><code>min_q</code> без статистики</td><td><span class="lvl lvl-w">предупр.</span></td><td><code>min_q &gt; 0</code> при <code>n &lt; 5</code>, либо <code>min_q &gt; 100</code>, либо для sht_delimyy нет подтверждения в названии</td><td>Значение не применяется; товаровед подтверждает или обнуляет</td></tr>
+      <tr><td>5.7</td><td>Вес короба вне диапазона</td><td><span class="lvl lvl-e">ошибка</span></td><td><code>box_kg</code> вне 0,2…10,0 кг, либо <code>box_kg &lt; unit_kg</code></td><td>Значение отбрасывается, позиция в ручной разбор</td></tr>
+      <tr><td>5.8</td><td>Инвариант двух шагов</td><td><span class="lvl lvl-e">ошибка</span></td><td><code>step_supplier &lt; order_step</code></td><td>Разработчик блокирует запись в справочник</td></tr>
+      <tr><td>5.9</td><td>Неделимость на практике</td><td><span class="lvl lvl-w">предупр.</span></td><td>тип ves_fix или sht_nedelimyy, но менее 95 % строк перемещения кратны шагу</td><td>Автоперевод в делимый тип с <code>review</code>; товаровед подтверждает</td></tr>
+      <tr><td>5.10</td><td>Излишек округления</td><td><span class="lvl lvl-w">предупр.</span></td><td>излишек &gt; 2 коробов либо &gt; 30-дневной потребности</td><td>Позиция снимается с автозаказа, уходит в ручной лист</td></tr>
+      <tr><td>5.11</td><td>Покрытие справочником</td><td><span class="lvl lvl-i">инфо</span></td><td>ШК ведомости отсутствует в <code>transfer_pack_v5</code></td><td>Позиция считается по названию; недельный отчёт по непокрытым</td></tr>
+      <tr><td>5.12</td><td>Обратная сверка файлов</td><td><span class="lvl lvl-e">ошибка</span></td><td>перечитанные xlsx или txt не совпали с расчётом</td><td>Разработчик разбирает по конкретным ШК из отчёта</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout">
+    <span class="ct">Проверка 5.12 · доработка внесена и проверена 04.09</span>
+    <p>Отчёт больше не пишет обезличенное «txt: содержимое не совпало с расчётом». Диагностика перечисляет конкретные штрихкоды с обеими величинами. Контрольная порча файла даёт:</p>
+    <p><code>xlsx: позиций 29 из 29, расхождений 1 → 2984670067786: расчёт 12.0 / xlsx 15.0</code><br><code>txt: расхождений 1 → 4820076691468: расчёт 1.0 / txt 8.0</code></p>
+  </div>
+
+  <p><span class="tag t-obs">набл</span> Обоснование правила 5.2: из 739 уникальных ШК за 5 дней контрольная цифра не сходится у 6, из них устойчиво у двух — <code class="bc">4820076691468</code> и <code class="bc">4820187435573</code>. Внутренних кодов с префиксом 2978 — 48, с 2984 — 34. Проверять у них контрольную цифру бессмысленно.</p>
+  <p><span class="tag t-obs">набл</span> Обоснование правила 5.1: длина 8 у 16 SKU (это валидные EAN-8 — Kinder, Tic Tac, Чупа Чупс), длина 11 у 6, длина 12 у 4. Потеря ведущего нуля при выгрузке в Excel воспроизводится в каждом прогоне: <code>54881005906 → 054881005906</code> (Чай Ахмад Англійський до сніданку). В справочнике есть <code class="bc">222000006945</code> из 12 знаков рядом с <code class="bc">2222000006952</code> и <code class="bc">2222000006969</code> — потерян знак.</p>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 6 =========================== -->
+<section id="s6">
+  <h2>Раздел 6</h2>
+  <div class="h2big">Реестр исключений</div>
+  <p class="lede">Единственный способ вывести позицию из автозаказа — явная запись в <code>transfer_pack_manual</code> со значением <code>unit_type = exclude</code>. Формулировки «возится своей доставкой» и подобные категориальные признаки не используются: они не исполнимы ни товароведом, ни кодом.</p>
+
+  <div class="rule"><div class="rn">6.1</div><div class="body">
+    <p><b>Список по штрихкоду.</b> Одна строка — один ШК, обязательные поля <code>exclude_reason</code>, <code>author</code>, <code>updated_at</code>. Ведёт категорийный менеджер, пересмотр — ежемесячно. Позиция из списка читается расчётом и участвует в сверке баланса, но не попадает ни в файл магазина, ни в сводный заказ.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">6.2</div><div class="body">
+    <p><b>Единственное исключение по тексту — уценка.</b> Маска названия «уцінка» / «уценка» выводит позицию из автозаказа автоматически, потому что признак содержится в самом названии и не может быть заведён заранее — карточка создаётся в момент уценки.<br>
+    <span class="tag t-obs">набл</span> В 5 ведомостях таких SKU два: <code class="bc">2978950039143</code> «Овочі/Фрукти Банан 1кг з уцінкою 50%» и <code class="bc">2978950040798</code> «Овочі/Фрукти Огірок 1кг уцінка 50%». Обе отсутствуют в справочнике, обе дают дробь.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">6.3</div><div class="body">
+    <p><b>Дубли-карточки.</b> Вторая карточка пары получает <code>exclude</code> с причиной «дубль &lt;ШК ведущей&gt;» — до физического слияния в Торгсофте.<br>
+    Кандидаты, подтверждённые движением <span class="tag t-obs">набл</span>: стаканы паперові 175 и 250 мл, стаканы пластик 180 и 500 мл, Пакет Майка, Пакет Смайл — шесть пар.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">6.4</div><div class="body">
+    <p><b>Техтовар кофеаппаратов из реестра исключён.</b> Прежнее правило «в перемещениях не участвует» опровергнуто данными: <code class="bc">2978950002598</code> «Кришка біла» за 5 дней даёт <code>[+] перемещение</code> = 2988 и <code>[-] перемещение</code> = 248; упаковки стаканов также перемещаются (4, 6, 21, 16 шт). <span class="tag t-int">интерп</span> Товар в потоке участвует, поэтому категориальное исключение снимается; решение по конкретной позиции принимается вручную через 6.1.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">6.5</div><div class="body">
+    <p><b>Сырьё цеха.</b> Позиций «Сырьё» в выгрузке без РЦ нет ни одной за 5 дней. Пункт снят с повестки; отдельного правила не требуется.</p>
+  </div></div>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 7 =========================== -->
+<section id="s7">
+  <h2>Раздел 7</h2>
+  <div class="h2big">План миграции</div>
+  <p class="lede">Очередь построена так, чтобы каждый шаг давал измеримый результат сам по себе и не зависел от завершения следующего. Шаги 1–3 не требуют изменений в Торгсофте.</p>
+
+  <div class="rule"><div class="rn">Шаг 1</div><div class="body">
+    <p><b>Ввести <code>frac_share_sale</code> и переклассифицировать 53 SKU.</b> Считается по накопленным ведомостям, записывается в <code>transfer_pack_v5</code>. 50 <code>sht_delimyy</code> и 3 <code>sht_nedelimyy</code> переводятся в <code>ves_plav</code> с шагом 0,1.<br>
+    Три <code>sht_nedelimyy</code> заслуживают отдельного внимания: <code class="bc">4820002301563</code> ХБФ Печиво Зоологічне 1 кг (шаг 5), <code class="bc">4820002300856</code> ХБФ Печиво Марія 1 кг (шаг 5), <code class="bc">4820002301587</code> ХБФ Крекер Ніжний 1 кг (шаг 4). <span class="tag t-int">интерп</span> «Шаг 5» у них означает короб 5 кг, а не 5 штук — при переводе значение переезжает в <code>box_kg</code> и становится <code>step_supplier</code>.<br>
+    <b>Результат:</b> рантайм-костыль <code>WEIGHT_CONFLICTS</code> перестаёт срабатывать; заказ поставщику по этим позициям считается в килограммах, а не в штуках.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">Шаг 2</div><div class="body">
+    <p><b>Наполнить <code>step_supplier</code> из <code>pack_reference</code>.</b> Применить правило 3.Б.2 и записать <code>k_gcd</code> в 850 SKU, из которых 539 сегодня имеют <code>step_supplier = 1</code>. 53 SKU с <code>k_gcd &gt; 24</code> вынести отдельным листом на ручное подтверждение.<br>
+    <b>Результат:</b> наполненность ветки заказа поставщику с 1,3 % до ≈ 18,6 %.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">Шаг 3</div><div class="body">
+    <p><b>Развести префиксы 2978 и 2984 в самой спецификации.</b> 2978… — закупка снаружи (расходка: пакеты, стаканы, бутылки, зажигалки), ветка заказа поставщику для них обязательна. 2984… — фасовка и производство на РЦ (сыр, мясо, овощи, уценка), единица заказа поставщику им не нужна вообще — только единица перемещения. Оба префикса исключаются из EAN-контроля по правилу 5.2.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">Шаг 4</div><div class="body">
+    <p><b>Закрыть дубли через <code>exclude</code>, не трогая Торгсофт.</b> Шесть пар «1 шт / Упаковка N шт»: ведущей назначается карточка, по которой идут продажи, вторая получает <code>unit_type = exclude</code>.<br>
+    <b>Известное ограничение, подлежащее записи в регламент:</b> до физического слияния расчёт по «упаковочной» карточке недостоверен — приход и реализация лежат на одной карточке, перемещение на другой, и ни один из двух расчётов не видит полной картины.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">Шаг 5</div><div class="body">
+    <p><b>Переименование в Торгсофте по разделу 4.</b> Порядок: сначала позиции с ложными скобками (проверка 5.5), затем дубли, затем массовое приведение к шаблону. Артикулы с дробным разделителем очищаются, значение переносится в <code>box_kg</code>.<br>
+    <b>Как не сломать историю:</b> переименование карточки историю не рвёт — рвёт её создание новой карточки. Поэтому при слиянии дублей физически удаляется только карточка-дубль, а её движения переносятся на ведущий ШК одной операцией с сохранением дат; ведущий ШК не меняется никогда. Акционные карточки («АКЦІЯ») не создаются заново, а заводятся как ценовое событие на существующем ШК <span class="tag t-tbc">тбп</span> — возможность этого в Торгсофте не проверялась.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">Шаг 6</div><div class="body">
+    <p><b>Отменить костыли в скрипте.</b> После шага 1 <code>WEIGHT_CONFLICTS</code> из механизма превращается в детектор: любое срабатывание означает, что справочник разошёлся с ведомостью, и должно давать предупреждение уровня 5.4, а не молча исправлять расчёт.</p>
+  </div></div>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 8 =========================== -->
+<section id="s8">
+  <h2>Раздел 8</h2>
+  <div class="h2big">Реестр открытых вопросов</div>
+  <p class="lede">То, что не решается имеющимися данными. Каждый пункт требует внешнего подтверждения — от поставщика, из Торгсофта или от категорийного менеджера.</p>
+
+  <div class="rule"><div class="rn">8.1</div><div class="body">
+    <p><b>Количество торговых точек.</b> В пяти ведомостях 36 центров учёта — эта цифра принята рабочей. Таблица <code>store_info</code> содержит 37 записей, <code>store_canon</code> — 49. Расхождение не объяснено: закрытые точки, склады, тестовые записи. Требует сверки с реестром объектов.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.2</div><div class="body">
+    <p><b>Короб для 2269 SKU справочника.</b> Правило 3.Б.2 покрывает 850 позиций; на остальных <code>step_supplier</code> останется равным шагу перемещения. Документарного источника вложенности нет. Требует решения: собирать спецификации от поставщиков либо принять состояние как постоянное.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.3</div><div class="body">
+    <p><b>Природа <code>k_gcd</code> у 53 SKU со значением выше 24.</b> Тринадцать из них имеют <code>k_gcd = 100</code> при <code>share_gcd = 1,0</code> — например <code class="bc">2000000668147</code> с <code>n</code> = 550. Неизвестно, короб это, паллета или артефакт учёта. До выяснения — только ручной ввод.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.4</div><div class="body">
+    <p><b>Короб «Пакет БМВ Маленький» = 100.</b> Значение выведено из <code>min_q</code> при <code>n</code> = 642, документом не подтверждено. Название при этом содержит «(1шт)». Требует сверки с поставщиком.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.5</div><div class="body">
+    <p><b>Размер блока для сигарет.</b> Все сигаретные SKU имеют шаг 5 (например <code class="bc">4823003216089</code> ЛМ Фест Блу, <code>n</code> = 293) при отраслевом блоке в 10 пачек. Требует подтверждения: 5 — это половина блока, внутренняя норма перемещения или ошибка.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.6</div><div class="body">
+    <p><b>Порог <code>FIX_MIN_FRAC</code> = 0,34 при малых шагах.</b> Для шоубокса из 24 штук порог отсекает недобор до 8 штук — это осмысленно. Для шага 2 он позволяет недозаказать 0,68 единицы, что на прогоне 04.09 дало реальный случай: <code class="bc">4820206290014</code> «Кава Якобз Монарх 1,8 гр» — расчёт 54,4, заказ 54. Требует решения: применять порог только при шаге ≥ 4 либо оставить как есть.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.7</div><div class="body">
+    <p><b>Акционные карточки без разрыва истории.</b> Возможность вести акцию ценовым событием на существующем ШК вместо новой карточки в Торгсофте не проверялась. От ответа зависит шаг 5 миграции.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.8</div><div class="body">
+    <p><b>Достоверность типа у 79 SKU.</b> Позиции с <code>n_sale &lt; 5</code> классифицируются по цепочке раздела 3 без первичного признака. Среди них есть весовые с одной-двумя строками: <code class="bc">4820274150753</code> «До Бочкового Грінки Ковбаски з Гірчицею 1кг» — одна активная строка. Требует накопления окна наблюдения либо ручного типирования.</p>
+  </div></div>
+
+  <div class="rule"><div class="rn">8.9</div><div class="body">
+    <p><b>Не воспроизвелось на имеющихся данных.</b> Три заявленных дефекта не подтвердились и вынесены сюда, а не в подтверждённые: «один ШК — разные названия» и «одно название — разные ШК» дают 0 случаев на 5 ведомостях; позиции «Сырьё» отсутствуют; <code>min_q = 1000 при n = 1</code> не существует — максимум в справочнике ровно 100,0. Класс дефекта <code>min_q</code> подтверждается в мягкой форме, примеры перенесены в правило 3.А.5.</p>
+  </div></div>
+</section>
+
+<hr class="sep">
+
+<!-- =========================== 9 =========================== -->
+<section id="s9">
+  <h2>Приложение</h2>
+  <div class="h2big">Контрольные прогоны от 04.09.2026</div>
+  <p class="lede">Оба ранее зафиксированных блокера воспроизведены на текущей версии скрипта и не подтвердились как дефекты расчёта — они были артефактами предыдущей версии, исправленной 04.09 в 15:02.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>Прогон</th><th class="num">Магазинов</th><th class="num">Позиций</th><th class="num">Единиц</th><th class="num">Ошибок</th><th>Обратная сверка</th></tr></thead>
+    <tbody>
+      <tr><td>05.09 · после правки</td><td class="num">11 из 11</td><td class="num">587</td><td class="num">3293,41</td><td class="num">0</td><td>совпала по 11 магазинам</td></tr>
+      <tr><td>05.09 · прежний лог 14:33</td><td class="num">11 из 11</td><td class="num">595</td><td class="num">3294,51</td><td class="num">1</td><td>расхождение в 1 магазине</td></tr>
+      <tr><td>04.09 · повтор из архива</td><td class="num">13 из 13</td><td class="num">792</td><td class="num">4141,0</td><td class="num">0</td><td>совпала по 13 магазинам</td></tr>
+      <tr><td>04.09 · прежний сбой</td><td class="num">0 из 13</td><td class="num">—</td><td class="num">—</td><td class="num">1</td><td>файлы не записаны</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p><b>Блокер «13 магазинов без заказа».</b> Ошибка звучала как «Округление не вверх — 2 позиций меньше расчёта». На текущей версии те же две позиции классифицируются как штатный отброс неполной упаковки по порогу 0,34, и прогон завершается без ошибок. Обе строки:</p>
+  <div class="callout">
+    <span class="ct">Порог 0,34 · те самые две позиции</span>
+    <p><b>Байрона 163</b> · <code class="bc">4820206290540</code> Кава Якобз 3в1 Динамікс 12,5г — расчёт 30,600, шаг 24, заказ 24,000, недобор 6,600 = 0,275 короба.</p>
+    <p><b>Грозненська 38</b> · <code class="bc">4820206290014</code> Кава Якобз Монарх 1,8 гр — расчёт 54,400, шаг 2, заказ 54,000, недобор 0,400 = 0,200 упаковки.</p>
+    <p>Первая строка — корректная работа порога. Вторая порождает вопрос 8.6.</p>
+  </div>
+
+  <p><b>Блокер «txt не совпал по Гвардійців Широнінців 54».</b> На текущей версии обратная сверка проходит по всем 11 магазинам. Диагностика доработана и проверена искусственной порчей файла — теперь отчёт называет конкретные штрихкоды и обе величины, поэтому следующее расхождение, если оно возникнет, будет разбираемым за минуту.</p>
+
+  <p><b>Побочные наблюдения по разнице версий.</b> Новая версия применяет <code>min_q</code> к 82 позициям вместо 1978 и отбрасывает 1897 как недостоверные; отбрасывает 212 позиций блочного товара с потребностью меньше половины блока; переводит 49 позиций на весовой шаг по данным ведомости; и предупреждает о 15 позициях, похожих на шоубокс, но не подтверждённых названием — среди них Пакет Фемелі M и S, Запальничка Кліппер, Кава Якобз 3в1 Інтенз и Латте. Все они — кандидаты в <code>transfer_pack_manual</code>.</p>
+</section>
+
+<footer>
+  <p>Регламент подготовлен на данных 01–05.09.2026. Формула расчёта потребности не пересматривается. Пункты раздела 8 требуют внешнего подтверждения и не должны трактоваться как утверждённые нормы.</p>
+</footer>
+
+</main>
+</div>
+</div>
+
+</body></html>
