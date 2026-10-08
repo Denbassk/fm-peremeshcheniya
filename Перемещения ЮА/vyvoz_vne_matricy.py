@@ -877,10 +877,12 @@ _SUP_TR = {ord(u"і"): u"и", ord(u"ї"): u"и", ord(u"є"): u"е", ord(u"ё"): 
 
 
 def sup_norm(s):
-    """Имя поставщика для сравнения: регистр, і/и, ь, «*» и кавычки не мешают («Прем*єр Фуд» = «Премьер Фуд»)."""
+    """Имя поставщика для сравнения: регистр, і/и, ь, «*», кавычки и пробелы у скобок не мешают
+    («Прем*єр Фуд» = «Премьер Фуд», «Арсенал ПК( Шейк)» = «Арсенал ПК (Шейк)»)."""
     if s is None or (isinstance(s, float) and pd.isna(s)):
         return u""
-    return re.sub(r"\s+", " ", str(s).lower().translate(_SUP_TR)).strip()
+    t = re.sub(r"\s+", " ", str(s).lower().translate(_SUP_TR)).strip()
+    return re.sub(r"\s*([()])\s*", r"\1", t)
 
 
 def save_excluded_suppliers(dirs, rules):
@@ -904,6 +906,20 @@ def load_excluded_suppliers(dirs):
     except Exception as e:
         R.check("WARN", u"Поставщики исключённые из вывоза", u"файл %s не прочитан (%s): беру список по умолчанию" % (path, e))
         return {sup_norm(n): n for n in DEFAULT_EXCLUDED_SUPPLIERS}
+
+
+def suppliers_file_time(dirs):
+    """Когда сохранён файл исключённых поставщиков («дд.мм чч:мм») или пусто, если файла нет."""
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(os.path.join(dirs.cache, SUPPLIERS_FILE))).strftime("%d.%m %H:%M")
+    except OSError:
+        return u""
+
+
+def suppliers_file_info(dirs):
+    """(сколько поставщиков в списке «не вывозить», когда сохранён файл, путь): список действует на каждый расчёт, пока его не изменят."""
+    n = len(load_excluded_suppliers(dirs))
+    return n, suppliers_file_time(dirs), os.path.join(dirs.cache, SUPPLIERS_FILE)
 
 
 def known_suppliers(dirs, info=None):
@@ -1635,7 +1651,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
     ref - готовый справочник (для самотеста); иначе матрица берётся из BigQuery/кэша."""
     reset_report()
     dirs.ensure()
-    info = {"ok": False, "day_dir": u"", "shops": [], "errors": 0, "summary": u"", "log": u""}
+    info = {"ok": False, "day_dir": u"", "shops": [], "errors": 0, "summary": u"", "log": u"", "excl_n": None, "excl_when": u""}
 
     stores = scan_stores(dirs)
     if not stores:
@@ -1698,6 +1714,8 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
     info["day_dir"] = day_dir
 
     excl_set = set(load_excluded_suppliers(dirs)) if excl_suppliers is None else set(excl_suppliers)
+    if not sweep:                                         # в зачистке список поставщиков не действует
+        info["excl_n"], info["excl_when"] = len(excl_set), suppliers_file_time(dirs)
     R.check("INFO", u"Поставщики, исключённые из вывоза", u"%d: %s" % (
         len(excl_set), u", ".join(sorted(excl_set)) if excl_set else u"никто (вывозятся все)"))
     keep_set = load_keep_shk(dirs) if keep_keys is None else set(keep_keys)
@@ -2232,10 +2250,35 @@ def self_test(gui=False):
             try:
                 rows_, off_ = open_suppliers_dialog(root_, dsup, None, test_mode=True)
                 ck(rows_ == 7 and off_ == 7, "окно поставщиков: строк %d, исключено %d (ожидалось 7 и 7)" % (rows_, off_))
+                # галочка = НЕ вывозим: поставили галочку на «Шейк», у «Моршин» её нет -> в файле только Шейк
+                pd.DataFrame({"supplier": [u"Тест Моршин", u"Тест Шейк"]}).to_csv(
+                    os.path.join(dsup.cache, "vyvoz_matrix.csv"), index=False, encoding="utf-8-sig")
+                seen = {}
+
+                def hook1(h):
+                    seen["free"] = sorted(n for n, v_ in h["on"].items() if not v_.get())
+                    h["on"][sup_norm(u"Тест Шейк")].set(True)
+                    h["save"]()
+                open_suppliers_dialog(root_, dsup, None, test_mode=True, test_hook=hook1)
+                rl = load_excluded_suppliers(dsup)
+                ck(seen["free"] == sorted([sup_norm(u"Тест Моршин"), sup_norm(u"Тест Шейк")]) and sup_norm(u"Тест Шейк") in rl
+                   and sup_norm(u"Тест Моршин") not in rl and len(rl) == 8,
+                   "окно: без галочки - вывозим, с галочкой - не вывозим (файл: %d, Шейк в нём, Моршина нет): %s" % (len(rl), sorted(rl)))
+                # «Очистить: вывозим всех» + «Сохранить» -> файл реально пуст, новое окно открывается без галочек
+                open_suppliers_dialog(root_, dsup, None, test_mode=True, test_hook=lambda h: (h["set_vis"](False), h["save"]()))
+                ck(load_excluded_suppliers(dsup) == {}, "«Очистить» сохраняет пустой список: %s" % sorted(load_excluded_suppliers(dsup)))
+                seen2 = {}
+                open_suppliers_dialog(root_, dsup, None, test_mode=True,
+                                      test_hook=lambda h: seen2.update(n=sum(1 for v_ in h["on"].values() if v_.get())))
+                ck(seen2.get("n") == 0, "после очистки окно открывается без единой галочки: %s" % seen2)
             finally:
                 root_.destroy()
         except Exception as e_:
             R.check("INFO", u"Окно поставщиков в самотесте", u"не проверено: %s" % e_)
+        n_f, when_f, path_f = suppliers_file_info(dsup)
+        ck(n_f == len(load_excluded_suppliers(dsup)) and when_f and path_f.endswith(SUPPLIERS_FILE), "сведения о файле поставщиков: %s %s" % (n_f, when_f))
+        ck(sup_norm("Арсенал ПК (Шейк)") == sup_norm("Арсенал ПК( Шейк)") == sup_norm("арсенал  пк ( шейк )"),
+           "пробелы у скобок не создают второго поставщика")
     finally:
         shutil.rmtree(tsup, ignore_errors=True)
     tpair = tempfile.mkdtemp(prefix="vyvoz_pairs_")
@@ -2485,6 +2528,8 @@ def self_test(gui=False):
         with open(os.path.join(out4["day_dir"], "Тест 1", "Тест 1.txt"), "rb") as f:
             g4 = dict(ln.split(";") for ln in f.read().decode("cp1251").split("\r\n") if ln)
         ck(SKU not in g4 and KG in g4, "прогон с исключённым поставщиком: txt без его товара: %s" % sorted(g4))
+        ck(out4.get("excl_n") == 1 and u"Поставщиков в списке «не вывозить»: 1" in _result_text(out4),
+           "итог прогона показывает число исключённых поставщиков: %s" % out4.get("excl_n"))
         ck(os.path.isfile(os.path.join(d.cache, SUPPLIERS_FILE)), "прогон создаёт файл поставщиков по умолчанию")
         sp3 = pd.read_excel(os.path.join(out3["day_dir"], "Тест 1", "Тест 1.xlsx"), sheet_name=SHEET_SUP, dtype=str)
         ck(len(sp3) == 2 and "Поставщик Тест" in set(sp3["Поставщик (по матрице)"]),
@@ -2879,6 +2924,9 @@ def _result_text(info):
     lines = []
     if info.get("day_dir"):
         lines.append(u"Результат: %s" % info["day_dir"])
+    if info.get("excl_n") is not None:
+        lines.append(u"Поставщиков в списке «не вывозить»: %d%s (меняется кнопкой «Поставщики: кого не вывозить»)"
+                     % (info["excl_n"], (u", список сохранён " + info["excl_when"]) if info.get("excl_when") else u""))
     for s in info.get("shops", []):
         lines.append(u"%-26s вывезти %4d поз., %9s ед., %12s грн   проверить 1: %d, проверить 2: %d, исключено %d   %s"
                      % (s["shop"], s["vyvoz_pos"], s["vyvoz_units"], u"{:,.0f}".format(s["vyvoz_sum"]).replace(",", " "),
@@ -2891,16 +2939,16 @@ def _result_text(info):
     return u"\n".join(lines)
 
 
-def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
-    """Окно «Поставщики для вывоза»: галочка = вывозим, снята = не вывозим (товар остаётся на полке и идёт
-    в инвентаризацию ЮА). «Сохранить» пишет Справочник\\vyvoz_suppliers.csv: следующий расчёт (и exe, и .py) берёт его сам."""
+def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None, test_hook=None):
+    """Окно «Поставщики: кого не вывозить»: ГАЛОЧКА = НЕ вывозим (товар остаётся на полке и идёт в инвентаризацию ЮА),
+    без галочки - вывозим. «Сохранить» пишет Справочник\\vyvoz_suppliers.csv: следующий расчёт (и exe, и .py) берёт его сам."""
     import tkinter as tk
     from tkinter import ttk
 
     known = known_suppliers(dirs, info)
     win = tk.Toplevel(root)
     win.withdraw()
-    win.title(u"Поставщики для вывоза")
+    win.title(u"Поставщики: кого не вывозить")
     k = max(1.0, win.winfo_fpixels("1i") / 96.0)
 
     def px(v):
@@ -2911,15 +2959,20 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
     except tk.TclError:
         acc = "TButton"
     MUT, F = "#6b7280", "Segoe UI"
-    on = {n: tk.BooleanVar(master=win, value=not d["excluded"]) for n, d in known.items()}
+    on = {n: tk.BooleanVar(master=win, value=bool(d["excluded"])) for n, d in known.items()}
     order = sorted(known, key=lambda n: (-(known[n]["pos"] or 0), known[n]["name"].lower()))
 
     top = ttk.Frame(win, padding=(px(18), px(14), px(18), px(6)))
     top.pack(fill="x")
-    ttk.Label(top, text=u"Поставщики для вывоза", font=(F, 14, "bold")).pack(anchor="w")
-    ttk.Label(top, text=u"Галочка стоит - товар поставщика вывозим. Галочка снята - товар остаётся на полке и идёт "
-                        u"в инвентаризацию ЮА. Новые поставщики по умолчанию вывозятся.",
-              foreground=MUT, wraplength=px(600), justify="left").pack(anchor="w", pady=(px(2), px(10)))
+    n0_, when0_, path0_ = suppliers_file_info(dirs)
+    ttk.Label(top, text=u"Поставщики: кого не вывозить", font=(F, 14, "bold")).pack(anchor="w")
+    ttk.Label(top, text=u"ГАЛОЧКА СТОИТ - товар поставщика НЕ вывозим: он остаётся на полке и идёт в инвентаризацию ЮА. "
+                        u"Без галочки - вывозим (новые поставщики тоже). Список хранится в файле и действует на все "
+                        u"следующие расчёты, пока вы его не измените.",
+              foreground=MUT, wraplength=px(600), justify="left").pack(anchor="w", pady=(px(2), px(4)))
+    ttk.Label(top, text=u"Сейчас в файле: не вывозим %d (%s)\n%s"
+                        % (n0_, (u"сохранён " + when0_) if when0_ else u"ещё не сохранялся", path0_),
+              foreground=MUT, wraplength=px(600), justify="left").pack(anchor="w", pady=(0, px(10)))
     r1 = ttk.Frame(top)
     r1.pack(fill="x")
     ttk.Label(r1, text=u"Поиск:").pack(side="left", padx=(0, px(8)))
@@ -2928,7 +2981,7 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
     ent.pack(side="left", fill="x", expand=True)
     mode = tk.StringVar(master=win, value=u"Все")
     ttk.Combobox(r1, textvariable=mode, state="readonly", width=17,
-                 values=(u"Все", u"Только вывозим", u"Только не вывозим")).pack(side="left", padx=(px(8), 0))
+                 values=(u"Все", u"Только не вывозим", u"Только вывозим")).pack(side="left", padx=(px(8), 0))
     r2 = ttk.Frame(top)
     r2.pack(fill="x", pady=(px(8), 0))
     cnt = ttk.Label(r2, text=u"", foreground=MUT)
@@ -2936,7 +2989,7 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
 
     hdr = ttk.Frame(win, padding=(px(18), px(4), px(34), px(2)))
     hdr.pack(fill="x")
-    for i, (t, an) in enumerate(((u"Поставщик", "w"), (u"Поз.", "e"), (u"Сумма, грн", "e"))):
+    for i, (t, an) in enumerate(((u"Поставщик (галочка - не вывозим)", "w"), (u"Поз.", "e"), (u"Сумма, грн", "e"))):
         ttk.Label(hdr, text=t, font=(F, 9, "bold"), foreground=MUT).grid(row=0, column=i, sticky=an,
                                                                           padx=((px(28), 0) if i == 0 else 0))
     for w_ in (hdr,):
@@ -2968,7 +3021,7 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
     win.bind("<MouseWheel>", wheel)
 
     def upd(*_a):
-        off = sum(1 for v in on.values() if not v.get())
+        off = sum(1 for v in on.values() if v.get())
         cnt.config(text=u"Не вывозим: %d из %d" % (off, len(on)))
 
     widgets = {}
@@ -2983,7 +3036,7 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
 
     def visible():
         q, m = sup_norm(sv.get()), mode.get()
-        return [n for n in order if q in n and (m == u"Все" or (m == u"Только вывозим") == bool(on[n].get()))]
+        return [n for n in order if q in n and (m == u"Все" or (m == u"Только не вывозим") == bool(on[n].get()))]
 
     def layout(*_a):
         vis, i = set(visible()), 0
@@ -3004,13 +3057,13 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
         for n in visible():
             on[n].set((not on[n].get()) if val is None else val)
         upd()
-    ttk.Button(r2, text=u"Отметить все", command=lambda: set_vis(True)).pack(side="left")
-    ttk.Button(r2, text=u"Снять все", command=lambda: set_vis(False)).pack(side="left", padx=px(8))
+    ttk.Button(r2, text=u"Не вывозить всех", command=lambda: set_vis(True)).pack(side="left")
+    ttk.Button(r2, text=u"Очистить: вывозим всех", command=lambda: set_vis(False)).pack(side="left", padx=px(8))
     ttk.Button(r2, text=u"Инвертировать", command=lambda: set_vis(None)).pack(side="left")
     ttk.Label(bt, text=u"Кнопки действуют на видимых (с учётом поиска)", foreground=MUT).pack(side="left")
 
     def save():
-        rules = {n: known[n]["name"] for n in on if not on[n].get()}
+        rules = {n: known[n]["name"] for n in on if on[n].get()}
         save_excluded_suppliers(dirs, rules)
         if on_save:
             on_save(len(rules))
@@ -3031,10 +3084,15 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None):
     except Exception:
         x, y = 100, 100
     win.geometry("%dx%d+%d+%d" % (W, H, x, y))
-    res = (len(visible()), sum(1 for v in on.values() if not v.get()))
+    res = (len(visible()), sum(1 for v in on.values() if v.get()))
     if test_mode:
         win.update()
-        win.destroy()
+        if test_hook:
+            test_hook({"on": on, "known": known, "set_vis": set_vis, "save": save})
+        try:
+            win.destroy()
+        except tk.TclError:
+            pass
         return res
     win.transient(root)
     win.deiconify()
@@ -5232,8 +5290,19 @@ def run_app2(dirs=None, test_mode=False):
     def open_keep():
         load_keep_shk(dirs)
         open_path(os.path.join(dirs.cache, KEEP_FILE))
-    btn(r, u"Поставщики: кого не вывозить...", lambda: open_suppliers_dialog(app, dirs, st["info"], on_save=lambda n: status(u"Поставщики сохранены: не вывозим %d" % n, GRN)), lock=False)
+    sup_lbl = ttk.Label(r, text=u"", style="Hint.TLabel")
+
+    def sup_refresh():
+        n_, when_, _p = suppliers_file_info(dirs)
+        sup_lbl.config(text=u"Не вывозим поставщиков: %d (список сохранён %s)" % (n_, when_ or u"-"))
+
+    def sup_saved(n):
+        sup_refresh()
+        status(u"Поставщики сохранены: не вывозим %d" % n, GRN)
+    btn(r, u"Поставщики: кого не вывозить...", lambda: open_suppliers_dialog(app, dirs, st["info"], on_save=sup_saved), lock=False)
     btn(r, u"ШК «не вывозить» (Excel)...", open_keep, lock=False)
+    sup_lbl.pack(side="left", padx=px(8))
+    sup_refresh()
 
     r = row(p1)
     btn(r, u"Сформировать списки вывоза", lambda: go(), primary=True)
@@ -5270,6 +5339,7 @@ def run_app2(dirs=None, test_mode=False):
             messagebox.showinfo(u"Списки вывоза", u"Выделите хотя бы один магазин.", parent=app)
             return
         rm, sw = bool(rm_var.get()), bool(sweep_var.get())
+        sup_refresh()
 
         def done(info, out):
             st["info"] = info or {}
