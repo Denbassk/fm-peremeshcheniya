@@ -1369,11 +1369,20 @@ MANUAL_MARK = u"обычно не вывозим: "
 MANUAL_HEAD = u"Обычно не вывозим (причина)"
 
 
-def manual_verdicts(res):
-    """Ручной выбор: автоматических исключений нет. Всё, что правила оставляли на полке (сигареты, кеги, стаканы, пакеты,
-    кулинария, исключённые поставщики, список ШК), попадает в «Вывезти на склад»; прежняя причина - в отдельной колонке."""
+def manual_verdicts(res, excl_suppliers=None, keep_keys=None):
+    """Ручной выбор (решение пользователя 08.10.2026: «сигареты вывозим, кег вывозим»; галочки «не вывозить» действуют всегда).
+    В «Вывезти на склад» возвращаются только сигареты и кеги, которые правила оставляли на полке, - если их поставщик не отмечен
+    «не вывозить» и ШК не в списке «не вывозить»; прежняя причина - в отдельной колонке. Поставщики с галочкой, список ШК, пакеты,
+    стаканы и расходники, сырьё кофеаппарата, овощи, кулинария и выпечка остаются вне списка, как в обычном расчёте."""
     res = res.copy()
-    m = res["verdict"].isin(("EXCL", "KUL"))
+    if len(res) == 0:
+        return res
+    nn = res["name"].map(nname)
+    free = (nn.map(lambda x: bool(CIG_RE.match(x))) | res["name"].map(is_keg)).astype(bool)
+    xs = set(excl_suppliers or ())
+    ticked = res["supplier"].map(lambda x: bool(sup_norm(x)) and sup_norm(x) in xs).astype(bool)
+    kept = res["key"].isin(set(keep_keys or ())).astype(bool)
+    m = (res["verdict"] == "EXCL") & free & ~ticked & ~kept
     res.loc[m, "reason"] = MANUAL_MARK + res.loc[m, "reason"].astype(str)
     res.loc[m, "verdict"] = "VYVOZ"
     return res
@@ -1395,9 +1404,9 @@ def write_store_book(path, shop, day, res, st, mode_note=u""):
     manual = bool(v["reason"].astype(str).str.startswith(MANUAL_MARK).any())
     if manual:
         heads, widths = heads + [MANUAL_HEAD], widths + [52]
-        ws["A3"] = (u"РУЧНОЙ ВЫБОР: в списке всё, что обычно не вывозят (сигареты, кеги, стаканы, пакеты, кулинария, исключённые "
-                    u"поставщики, список ШК). Причина - в последней колонке: лишнее удалите (фильтр по колонке), лист сохраните "
-                    u"в «Корректировка_ЮА». Файл txt рядом - до вашей правки, для ТСД его не берите.")
+        ws["A3"] = (u"РУЧНОЙ ВЫБОР: в списке и сигареты, кеги (обычно их не вывозят, причина - в последней колонке). Поставщики с "
+                    u"галочкой «не вывозить», список ШК, пакеты, стаканы и расходники, сырьё кофеаппарата, овощи, кулинария в список не "
+                    u"попадают. Лишнее удалите, лист сохраните в «Корректировка_ЮА». Файл txt рядом - до вашей правки, для ТСД его не берите.")
         ws["A3"].font = Font(bold=True, color="C00000")
     for j, (h, w) in enumerate(zip(heads, widths), 1):
         c0 = ws.cell(row=4, column=j, value=h)
@@ -1747,7 +1756,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
     excl_set = set(load_excluded_suppliers(dirs)) if excl_suppliers is None else set(excl_suppliers)
     manual = bool(manual and not sweep)
     info["manual"] = manual
-    if not sweep and not manual:                          # в зачистке и в ручном выборе список поставщиков не действует
+    if not sweep:                                         # в зачистке список поставщиков не действует (в ручном выборе - действует)
         info["excl_n"], info["excl_when"] = len(excl_set), suppliers_file_time(dirs)
     R.check("INFO", u"Поставщики, исключённые из вывоза", u"%d: %s" % (
         len(excl_set), u", ".join(sorted(excl_set)) if excl_set else u"никто (вывозятся все)"))
@@ -1755,8 +1764,8 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
     R.check("INFO", u"Список ШК «не вывозить»", u"%d ШК" % len(keep_set))
     if manual:
         R.check("WARN", u"Режим: РУЧНОЙ ВЫБОР",
-                u"автоматических исключений нет: в «Вывезти на склад» попадает и то, что обычно не вывозят (сигареты, кеги, стаканы, "
-                u"пакеты, кулинария, поставщики из списка, список ШК); причина в последней колонке, лишнее удалите сами")
+                u"сигареты и кеги идут в «Вывезти на склад» (причина, по которой их обычно не вывозят, - в последней колонке), если их "
+                u"поставщик не отмечен «не вывозить» и ШК не в списке «не вывозить»; остальные исключения действуют как обычно")
     sweep_rules = None
     if sweep:
         sweep_rules = load_sweep_stay(dirs)
@@ -1775,7 +1784,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
         if sweep:
             res = sweep_verdicts(res, sweep_rules, ref)
         elif manual:
-            res = manual_verdicts(res)
+            res = manual_verdicts(res, excl_set, keep_set)
         st = shop_stats(res)
         xs = res[res["reason"].str.startswith(u"поставщик исключён")]
         if len(xs):
@@ -2583,12 +2592,13 @@ def self_test(gui=False):
         out5 = run_vyvoz(d, ref=ref2, excl_suppliers={sup_norm("Сувенир-опт")}, manual=True, day=date(2026, 9, 30))   # другая дата: не трогает результаты выше
         with open(os.path.join(out5["day_dir"], "Тест 1", "Тест 1.txt"), "rb") as f:
             g5 = dict(ln.split(";") for ln in f.read().decode("cp1251").split("\r\n") if ln)
-        ck(SKU in g5 and KG in g5, "ручной выбор: исключённый поставщик не исключается автоматически: %s" % sorted(g5))
+        ck(SKU not in g5 and g5 == g4, "ручной выбор: поставщик с галочкой «не вывозить» в список не попадает, без сигарет и кегов "
+                                       "список как в обычном расчёте: %s" % sorted(g5))
         ws5 = load_workbook(os.path.join(out5["day_dir"], "Тест 1", "Тест 1.xlsx"))[SHEET_VYVOZ]
-        notes5 = [ws5.cell(row=r_, column=10).value for r_ in range(5, 5 + len(g5))]
-        ck(ws5.cell(row=4, column=10).value == MANUAL_HEAD and any(n_ and u"поставщик" in n_ for n_ in notes5),
-           "ручной выбор: прежняя причина исключения в последней колонке: %s" % notes5)
-        ck(out5.get("manual") and out5.get("excl_n") is None and u"РУЧНОЙ ВЫБОР" in _result_text(out5), "итог показывает ручной выбор")
+        ck(ws5.cell(row=4, column=10).value is None and not ws5["A3"].value,
+           "ручной выбор: нечего возвращать в список - нет ни колонки причины, ни пометки A3")
+        ck(out5.get("manual") and out5.get("excl_n") == 1 and u"РУЧНОЙ ВЫБОР" in _result_text(out5),
+           "итог показывает ручной выбор и число поставщиков «не вывозить»: %s" % out5.get("excl_n"))
         ck(u"РУЧНОЙ ВЫБОР" not in t4_ and load_workbook(os.path.join(out4["day_dir"], "Тест 1", "Тест 1.xlsx"))[SHEET_VYVOZ].cell(row=4, column=10).value is None,
            "без ручного выбора лист и итог прежние")
         ck(os.path.isfile(os.path.join(d.cache, SUPPLIERS_FILE)), "прогон создаёт файл поставщиков по умолчанию")
@@ -2680,6 +2690,7 @@ def self_test(gui=False):
         shutil.rmtree(tp_, ignore_errors=True)
     _selftest_split_update(ck)
     _selftest_kegs(ck)
+    _selftest_manual_rules(ck)
     _selftest_sweep(ck)
     _selftest_window(ck)
     _selftest_map(ck)
@@ -2924,6 +2935,42 @@ def _write_vyvoz_list_xlsx(path, shop, day_str, rows):
     wb.save(path)
 
 
+def _selftest_manual_rules(ck):
+    """Ручной выбор: в список возвращаются только сигареты и кеги; галочки поставщиков, список ШК, кулинария, пакеты, стаканы,
+    сырьё кофе и овощи остаются вне списка (жалоба 08.10.2026: в списке была выпечка и кулинария при галочках «не вывозить»)."""
+    rows_ = [  # (ключ, вердикт, причина, название, поставщик)
+        ("k01", "EXCL", u"сигареты (не вывозим)", u"Сигарети Тест Червоні 20шт", u"Сигарети_BAT"),
+        ("k02", "EXCL", u"название:  кег", u"БІР  Кег Пиво Тест 0,5л (30)", u"БІР_КЕГ"),
+        ("k03", "EXCL", u"сигареты (не вывозим)", u"Сигарети Тест Сині 20шт", u"Сигарети Тест"),        # поставщик с галочкой
+        ("k04", "EXCL", u"сигареты (не вывозим)", u"Сигарети Тест Білі 20шт", u"Сигарети_BAT"),         # ШК в списке «не вывозить»
+        ("k05", "KUL", u"кулинария (не вывозим, на ЮА не переходит)", u"Випічка Хліб Тест 500г", u"Кулінарія"),
+        ("k06", "KUL", u"кулинария (не вывозим, на ЮА не переходит)", u"Кулінарія Борщ Тест", u""),
+        ("k07", "EXCL", u"поставщик исключён из вывоза: Хладік", u"Хладік Пельмені Тест 0,4кг", u"Хладік"),
+        ("k08", "EXCL", u"пакет", u"Пакет БОПП Тест", u"Центр Витратних Матеріалів"),
+        ("k09", "EXCL", u"стакан", u"Агропром Стакан Пластик 300 мл 1 шт", u""),
+        ("k10", "EXCL", u"сырьё кофеаппарата (поставщик каваапарат, по ШК)", u"Якобз Кава Зернова (1кг)", u"ТОВ СТВ Дистрибюшн (Каваапарат)"),
+        ("k11", "EXCL", u"название: овочі/фрукти", u"Овочі/Фрукти Морква 1кг", u"Магазин"),
+        ("k12", "EXCL", u"в списке «не вывозить» по ШК (vyvoz_keep.csv); заведён на ЮА, допродаём", u"Кава Тест 3в1 12гр", u"Якобз"),
+        ("k13", "VYVOZ", u"нет в матрице, на ЮА не заведён", u"Сувенир Тест", u""),
+        ("k14", "CHECK1", u"заведён на ЮА (по ШК)", u"Новинка Тест", u""),
+        ("k15", "PACK", u"штучный товар: упаковка уже на ЮА", u"Монжар Драже Тест (24) 1 шт", u"Монжар")]
+    res = pd.DataFrame(rows_, columns=["key", "verdict", "reason", "name", "supplier"])
+    out = manual_verdicts(res, {sup_norm(u"Сигарети Тест"), sup_norm(u"Хладік"), sup_norm(u"Кулінарія")}, {"k04", "k12"})
+    v = dict(zip(out["key"], out["verdict"]))
+    why = dict(zip(out["key"], out["reason"]))
+    ck(v["k01"] == "VYVOZ" and v["k02"] == "VYVOZ" and why["k01"].startswith(MANUAL_MARK) and why["k02"].startswith(MANUAL_MARK),
+       "ручной выбор: сигареты и кеги - в список, прежняя причина сохранена: %s | %s" % (why["k01"], why["k02"]))
+    ck(v["k03"] == "EXCL" and v["k04"] == "EXCL",
+       "ручной выбор: сигареты поставщика с галочкой и из списка ШК в список не идут: %s %s" % (v["k03"], v["k04"]))
+    ck(v["k05"] == "KUL" and v["k06"] == "KUL", "ручной выбор: кулинария и выпечка в список не идут: %s %s" % (v["k05"], v["k06"]))
+    stay = [k for k in ("k07", "k08", "k09", "k10", "k11", "k12") if v[k] != "EXCL"]
+    ck(not stay, "ручной выбор: поставщик с галочкой, пакет, стакан, сырьё кофе, овощи, список ШК - вне списка: %s" % stay)
+    ck(v["k13"] == "VYVOZ" and v["k14"] == "CHECK1" and v["k15"] == "PACK"
+       and all(why[k] == r_[2] for r_ in rows_ for k in (r_[0],) if k not in ("k01", "k02")),
+       "ручной выбор: остальные вердикты и причины не меняются")
+    ck(len(manual_verdicts(res.head(0), None, None)) == 0, "ручной выбор: пустой магазин не ломает расчёт")
+
+
 def _selftest_kegs(ck):
     """Кеги: не на РЦ, а на точки, где этот ШК продавался (в т.ч. вне топа по обороту); нигде не продавался - по обороту точек."""
     tmp = tempfile.mkdtemp(prefix="vyvoz_keg_")
@@ -3129,7 +3176,8 @@ def _result_text(info):
     if info.get("day_dir"):
         lines.append(u"Результат: %s" % info["day_dir"])
     if info.get("manual"):
-        lines.append(u"РЕЖИМ: РУЧНОЙ ВЫБОР - автоматических исключений нет, причины обычного исключения в последней колонке листа")
+        lines.append(u"РЕЖИМ: РУЧНОЙ ВЫБОР - сигареты и кеги в списке вывоза (причина обычного исключения в последней колонке); "
+                     u"поставщики с галочкой, список ШК, расходники, кулинария - не вывозим")
     if info.get("excl_n") is not None:
         lines.append(u"Поставщиков в списке «не вывозить»: %d%s (меняется кнопкой «Поставщики: кого не вывозить»)"
                      % (info["excl_n"], (u", список сохранён " + info["excl_when"]) if info.get("excl_when") else u""))
@@ -4144,7 +4192,7 @@ def _parse_args(argv):
             a["no_rc"] = True
         elif t == "sweep":                        # зачистка остатка: вывезти всё, кроме заморозки, скоропортов и расходников
             a["sweep"] = True
-        elif t in ("manual", "manual-select"):    # ручной выбор: без автоматических исключений, причина в последней колонке
+        elif t in ("manual", "manual-select"):    # ручной выбор: сигареты и кеги в списке, причина в последней колонке
             a["manual"] = True
         elif t == "map-list":                     # список кандидатов для таблицы соответствия ШК Family <-> ЮА (Excel)
             a["map_list"] = True
@@ -5908,10 +5956,12 @@ def run_app2(dirs=None, test_mode=False):
     rm_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(opts, text=u"Вывозить и товар из матрицы, который на ЮА ещё не завозился", variable=rm_var).pack(anchor="w", pady=(px(8), 0))
     manual_var = tk.BooleanVar(value=True)
-    man_cb = ttk.Checkbutton(opts, text=u"РУЧНОЙ ВЫБОР: в список попадает всё, лишнее удаляете вы", variable=manual_var)
+    man_cb = ttk.Checkbutton(opts, text=u"РУЧНОЙ ВЫБОР: сигареты и кеги - тоже в список вывоза", variable=manual_var)
     man_cb.pack(anchor="w", pady=(px(6), 0))
-    wrap_label(opts, u"Без автоматических исключений: в список попадают и сигареты, кеги, стаканы, пакеты, кулинария, товар поставщиков из списка. "
-                     u"Почему товар обычно не вывозят - написано в последней колонке листа; лишние строки удалите в Excel.").pack(fill="x", padx=(px(26), 0))
+    wrap_label(opts, u"В список добавляются сигареты и кеги, которых обычно не вывозят (причина - в последней колонке листа), кроме тех, чей "
+                     u"поставщик отмечен «не вывозить» или ШК в списке «не вывозим». Всё остальное как обычно: товар поставщиков с галочкой, "
+                     u"список ШК, пакеты, стаканы и расходники, сырьё кофеаппарата, овощи, кулинария и выпечка в список НЕ попадают."
+               ).pack(fill="x", padx=(px(26), 0))
     sweep_var = tk.BooleanVar(value=False)
     ttk.Checkbutton(opts, text=u"ЗАЧИСТКА ОСТАТКА: вывезти всё, кроме заморозки, скоропортов и расходников (независимо от матрицы и ЮА)",
                     variable=sweep_var).pack(anchor="w", pady=(px(6), 0))
@@ -5930,7 +5980,7 @@ def run_app2(dirs=None, test_mode=False):
         if sweep_var.get():
             t_ = u"В зачистке список поставщиков не действует."
         elif manual_var.get():
-            t_ = u"Поставщиков в списке «не вывозить»: %d (сохранён %s). В ручном выборе список не применяется: их товар виден в листе с причиной." % (n_, when_ or u"-")
+            t_ = u"Не вывозим поставщиков: %d (список сохранён %s). Галочки действуют и в ручном выборе." % (n_, when_ or u"-")
         else:
             t_ = u"Не вывозим поставщиков: %d (список сохранён %s)." % (n_, when_ or u"-")
         sup_lbl.config(text=t_)
@@ -5940,8 +5990,8 @@ def run_app2(dirs=None, test_mode=False):
         if sweep_var.get():
             t_, col_ = u"ЗАЧИСТКА ОСТАТКА: вывозим всё, кроме заморозки, скоропортов и расходников; матрица, ЮА и список поставщиков не учитываются.", AMB
         elif manual_var.get():
-            t_, col_ = (u"РУЧНОЙ ВЫБОР: автоматических исключений нет. В список попадает и то, что обычно не вывозят (сигареты, кеги, стаканы, пакеты, "
-                        u"кулинария, поставщики из списка); причина - в последней колонке листа, лишнее удаляете вы."), GRN
+            t_, col_ = (u"РУЧНОЙ ВЫБОР: сигареты и кеги - в список вывоза (причина - в последней колонке листа). Не вывозим: %d поставщиков "
+                        u"с галочкой, список ШК, пакеты, расходники, сырьё кофе, овощи, кулинарию и выпечку." % n_), GRN
         else:
             t_, col_ = (u"ОБЫЧНЫЙ РАСЧЁТ: не вывозим сигареты, кеги, расходники, кулинарию, список ШК и %d поставщиков из списка." % n_), "#1f2023"
         if rm_var.get() and not sweep_var.get():
@@ -6126,8 +6176,8 @@ def run_app2(dirs=None, test_mode=False):
             return
         src = auto_paths[i]
         if has_manual_note(src) and not messagebox.askyesno(
-                u"Взять без правок", u"Это список РУЧНОГО ВЫБОРА: в нём и то, что обычно не вывозят (сигареты, кеги, стаканы, пакеты, кулинария, "
-                                   u"поставщики из списка).\nЕсли вы ничего не удаляли, всё это поедет в распределение.\n\nВзять список как есть?",
+                u"Взять без правок", u"Это список РУЧНОГО ВЫБОРА: в нём сигареты и кеги, которые обычно не вывозят.\nЕсли вы ничего не "
+                                   u"удаляли, они поедут в распределение (кеги - на точки, где они продаются).\n\nВзять список как есть?",
                 parent=app, default="no"):
             return
         try:
