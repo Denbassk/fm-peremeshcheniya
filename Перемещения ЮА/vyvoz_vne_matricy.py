@@ -4434,7 +4434,7 @@ def _fm_theme(app, k=1.0):
 
     def px(v):
         return int(v * k)
-    BG, FLD, BRD, TX, MUT, HOV, HD = "#f6f6f7", "#ffffff", "#d6d6da", "#1f2023", "#6b6b70", "#ececee", "#ededef"
+    BG, FLD, BRD, TX, MUT, HOV, HD = "#f6f6f7", "#ffffff", "#dcdce1", "#1f2023", "#6b6b70", "#ececee", "#f0f0f2"
     s = ttk.Style(app)
     s.theme_use("clam")
     app.configure(background=BG)
@@ -4458,6 +4458,10 @@ def _fm_theme(app, k=1.0):
                 darkcolor=FM_RED, font=("Segoe UI", 10, "bold"))
     acc = [("disabled", "#f0b3b5"), ("pressed", "#9c1217"), ("active", FM_RED_D)]
     s.map("Accent.TButton", background=acc, bordercolor=acc, lightcolor=acc, darkcolor=acc, foreground=[("disabled", "#ffffff")])
+    s.configure("TRadiobutton", background=BG, foreground=TX, indicatorbackground=FLD, indicatorforeground=FM_RED,
+                upperbordercolor="#8e8e94", lowerbordercolor="#8e8e94", padding=px(2))
+    s.map("TRadiobutton", background=[("active", BG)], indicatorbackground=[("selected", FLD), ("pressed", HOV)],
+          indicatorforeground=[("selected", FM_RED)], upperbordercolor=[("selected", FM_RED)], lowerbordercolor=[("selected", FM_RED)])
     s.configure("TCheckbutton", background=BG, foreground=TX, indicatorbackground=FLD, indicatorforeground="#ffffff",
                 upperbordercolor=BRD, lowerbordercolor=BRD, padding=px(2))
     s.map("TCheckbutton", background=[("active", BG)], indicatorbackground=[("selected", FM_RED), ("pressed", HOV)],
@@ -5678,7 +5682,7 @@ def run_app2(dirs=None, test_mode=False):
     busy = []
 
     # ---------- каркас ----------
-    side = tk.Frame(app, bg=SIDE, width=px(210))
+    side = tk.Frame(app, bg=SIDE, width=px(224))
     side.pack(side="left", fill="y")
     side.pack_propagate(False)
     from tkinter import font as tkfont
@@ -5693,8 +5697,9 @@ def run_app2(dirs=None, test_mode=False):
         pass
     tk.Label(hdr_, text=u"ФЕМЕЛІ\nМАРКЕТ", bg=SIDE, fg=FM_RED, font=(LF, 14, "bold"), justify="left").pack(side="left", padx=(px(10), 0))
     tk.Frame(side, bg=FM_RED, height=max(2, px(2))).pack(fill="x", padx=px(16), pady=(px(12), px(6)))
-    tk.Label(side, text=u"Вывоз вне матрицы · ЮА", bg=SIDE, fg=SIDE_FG, font=(F, 9), anchor="w").pack(fill="x", padx=px(16), pady=(0, px(18)))
-    main = ttk.Frame(app, padding=(px(24), px(18), px(24), px(10)))
+    tk.Label(side, text=u"Вывоз вне матрицы · переход на ЮА", bg=SIDE, fg=SIDE_FG, font=(F, 9), anchor="w").pack(fill="x", padx=px(16), pady=(0, px(14)))
+    tk.Label(side, text=u"ПОРЯДОК РАБОТЫ", bg=SIDE, fg="#6f7077", font=(F, 8, "bold"), anchor="w").pack(fill="x", padx=px(20), pady=(0, px(4)))
+    main = ttk.Frame(app, padding=(px(26), px(20), px(26), px(10)))
     main.pack(side="left", fill="both", expand=True)
     head = ttk.Frame(main)
     head.pack(fill="x")
@@ -5719,8 +5724,8 @@ def run_app2(dirs=None, test_mode=False):
     pages, nav, cur, on_show = {}, {}, {"p": None}, {}
     TITLES = {
         "vyvoz": (u"Списки вывоза", u"Что делает: по остатку магазина составляет список товара, который нужно вывезти на Полевая-Склад (лист для печати и файл для ТСД). Порядок: 1) положите свежие выгрузки; 2) проверьте магазин; 3) нажмите «Сформировать списки вывоза»; 4) откройте список в Excel, удалите лишнее и сохраните в «Корректировка_ЮА»."),
-        "split": (u"Распределение по точкам", u"Что делает: делит список вывоза на файлы для ТСД по адресам: товар РЦ - на «Полевая-Склад», прямые поставки - на самые сильные торговые точки. Список берётся ТОЛЬКО из папки «Корректировка_ЮА»: правили его в Excel - сохраните туда; правок нет - нажмите «Взять без правок». На следующий день сюда не возвращайтесь - используйте «Новый день»."),
-        "upd": (u"Новый день: убрать пришедшее", u"Что делает: убирает из вашего списка и из готовых файлов ТСД товар, который уже пришёл на ЮА (стал ЮА-шным). Берётся ваш исправленный лист и готовые файлы; они не меняются. Очищенные копии лежат в папке Обновление_<дата> - в ТСД берите файлы оттуда."),
+        "split": (u"Распределение по точкам", u"Что делает: делит список вывоза на файлы для ТСД по адресам: товар РЦ - на «Полевая-Склад», прямые поставки - на самые сильные торговые точки. Список берётся ТОЛЬКО из папки «Корректировка_ЮА»: правили его в Excel - сохраните туда; правок нет - нажмите «Взять без правок». На следующий день сюда не возвращайтесь - используйте «Подчистка списка»."),
+        "upd": (u"Подчистка списка", u"Что делает: убирает из вашего списка и из готовых файлов ТСД товар, который уже пришёл на ЮА (стал ЮА-шным) - его вывозить не нужно. Берётся ваш исправленный лист и готовые файлы; они не меняются. Очищенные копии лежат в папке Обновление_<дата> - в ТСД берите файлы оттуда."),
         "fin": (u"Инвентаризация ЮА (финал)", u"Выгрузку Family снимайте ПОСЛЕ проведения вывоза. Всё, что осталось на полке, кроме кулинарии и штучных, идёт в файл инвентаризации ЮА с теми ШК, которые знает ЮА. Ваши правки списка вывоза здесь не нужны: файл строится по факту остатка."),
         "serv": (u"Сервис", u"Проверка программы и быстрый доступ к папкам."),
         "log": (u"Журнал", u"Подробный отчёт по всем действиям за сеанс."),
@@ -5747,7 +5752,7 @@ def run_app2(dirs=None, test_mode=False):
         fr.pack(fill="x", padx=px(10), pady=px(2))
         bar_ = tk.Frame(fr, bg=SIDE, width=px(3))
         bar_.pack(side="left", fill="y")
-        lb = tk.Label(fr, text=text, bg=SIDE, fg=SIDE_FG, font=(F, 10), anchor="w", padx=px(14), pady=px(9), cursor="hand2")
+        lb = tk.Label(fr, text=text, bg=SIDE, fg=SIDE_FG, font=(F, 10), anchor="w", padx=px(12), pady=px(8), cursor="hand2")
         lb.pack(side="left", fill="x", expand=True)
 
         def hover(on):
@@ -5764,7 +5769,7 @@ def run_app2(dirs=None, test_mode=False):
         return pages[key]
 
     def card(parent, title=None, expand=False):
-        c = ttk.Frame(parent, style="Card.TFrame", padding=(px(14), px(10)))
+        c = ttk.Frame(parent, style="Card.TFrame", padding=(px(16), px(12)))
         c.pack(fill="both" if expand else "x", expand=expand, pady=(0, px(10)))
         if title:
             ttk.Label(c, text=title, style="H2.TLabel").pack(anchor="w", pady=(0, px(6)))
@@ -5853,7 +5858,7 @@ def run_app2(dirs=None, test_mode=False):
         open_path(v) if v and os.path.exists(v) else nores()
 
     # ================= 1. СПИСКИ ВЫВОЗА =================
-    p1h = nav_item("vyvoz", u"1   Списки вывоза")
+    p1h = nav_item("vyvoz", u"1  Списки вывоза")
 
     def wrap_label(parent, text=u"", style="Hint.TLabel"):
         """Подпись, которая переносится по ширине окна (pack с fill="x")."""
@@ -5867,12 +5872,12 @@ def run_app2(dirs=None, test_mode=False):
     rmode.pack(fill="x")
     rb = ttk.Frame(ra)
     rb.pack(fill="x", pady=(px(6), 0))
-    btn(rb, u"Сформировать списки вывоза", lambda: go(), primary=True)
-    btn(rb, u"Открыть папку результата", lambda: open_key("info", "day_dir"), lock=False)
-    btn(rb, u"Открыть сводку (Excel)", lambda: open_key("info", "summary"), lock=False)
+    btn(rb, u"Сформировать список", lambda: go(), primary=True, side_="right")
+    btn(rb, u"Папка результата", lambda: open_key("info", "day_dir"), lock=False)
+    btn(rb, u"Сводка (Excel)", lambda: open_key("info", "summary"), lock=False)
     note1 = wrap_label(rb, u"Результат: Excel-лист и файл для ТСД - в папке ВЫВОЗ\\<дата>\\<магазин>.")
     note1.pack(side="left", fill="x", expand=True, padx=px(8))
-    cv1 = tk.Canvas(p1h, highlightthickness=0, borderwidth=0, background="#f6f6f7", yscrollincrement=px(24))
+    cv1 = tk.Canvas(p1h, highlightthickness=0, borderwidth=0, background=ttk.Style(app).lookup("TFrame", "background") or "#f6f6f7", yscrollincrement=px(24))
     sb1 = ttk.Scrollbar(p1h, orient="vertical", command=cv1.yview)
     p1 = ttk.Frame(cv1)
     p1_id = cv1.create_window((0, 0), window=p1, anchor="nw")
@@ -5900,9 +5905,9 @@ def run_app2(dirs=None, test_mode=False):
 
     c = card(p1)
     hr = row(c)
-    ttk.Label(hr, text=u"Шаг 1. Проверьте выгрузки: что лежит в папках ВХОД_ВЫВОЗ", style="H2.TLabel").pack(side="left")
-    btn(hr, u"Открыть выбранную папку", lambda: open_input_folder(), lock=False, side_="right")
-    btn(hr, u"Перечитать папки", lambda: refresh(), side_="right")
+    ttk.Label(hr, text=u"Шаг 1. Проверьте выгрузки в ВХОД_ВЫВОЗ", style="H2.TLabel").pack(side="left")
+    btn(hr, u"Открыть папку", lambda: open_input_folder(), lock=False, side_="right")
+    btn(hr, u"Перечитать", lambda: refresh(), side_="right")
     tvi = table(c, (("fold", u"Папка", 120, "w"), ("need", u"Нужно", 100, "w"), ("what", u"Что положить", 185, "w"),
                     ("file", u"Файл (самый свежий)", 200, "w"), ("when", u"Выгружено", 85, "center"),
                     ("st", u"Статус", 110, "w")), 5, expand=False)
@@ -5915,8 +5920,8 @@ def run_app2(dirs=None, test_mode=False):
         fp_ = in_folders.get(sel_[0]) if sel_ else None
         open_path(fp_ if fp_ and os.path.isdir(fp_) else dirs.inp)
     tvi.bind("<Double-1>", open_input_folder)
-    wrap_label(c, u"Зелёное - можно работать; жёлтое или красное - выгрузите файл заново и нажмите «Перечитать папки». Склад ЮА - со ВСЕМИ "
-                  u"строками, и нулевыми; приходы ЮА - за весь период; ×2 - в папке два файла (берётся самый свежий).").pack(fill="x", pady=(px(4), 0))
+    wrap_label(c, u"Зелёное - можно работать; жёлтое или красное - выгрузите заново и нажмите «Перечитать». Склад ЮА - со ВСЕМИ строками, "
+                  u"и нулевыми; приходы ЮА - за весь период; ×2 - в папке два файла, берётся самый свежий. Двойной щелчок - открыть папку.").pack(fill="x", pady=(px(4), 0))
 
     def fill_inputs(rows_):
         tvi.delete(*tvi.get_children())
@@ -5928,20 +5933,19 @@ def run_app2(dirs=None, test_mode=False):
 
     c = card(p1)
     hr = row(c)
-    ttk.Label(hr, text=u"Шаг 2. Выберите магазин, который вывозим", style="H2.TLabel").pack(side="left")
-    btn(hr, u"Открыть папку МАГАЗИНЫ", lambda: open_path(dirs.stores), lock=False, side_="right")
+    ttk.Label(hr, text=u"Шаг 2. Выберите магазин", style="H2.TLabel").pack(side="left")
+    btn(hr, u"Папка МАГАЗИНЫ", lambda: open_path(dirs.stores), lock=False, side_="right")
     restore_btn = btn(hr, u"Показать скрытые", lambda: restore_hidden(), lock=False, side_="right")
-    btn(hr, u"Скрыть магазин", lambda: hide_selected(), lock=False, side_="right")
-    btn(hr, u"Выбрать все магазины", lambda: tv1.selection_set(tv1.get_children()), lock=False, side_="right")
-    btn(hr, u"Перечитать магазины", lambda: refresh(), side_="right")
+    btn(hr, u"Скрыть", lambda: hide_selected(), lock=False, side_="right")
+    btn(hr, u"Выбрать все", lambda: tv1.selection_set(tv1.get_children()), lock=False, side_="right")
     tv1 = table(c, (("shop", u"Магазин", 170, "w"), ("file", u"Файл выгрузки", 330, "w"), ("time", u"Выгружено", 95, "center"),
                     ("age", u"Свежесть", 150, "w")), 2, expand=False)
     for lv_, col_ in (("OK", GRN), ("WARN", AMB), ("ERR", RED), ("INFO", MUT)):
         tv1.tag_configure(lv_, foreground=col_)
     pick_lbl = ttk.Label(c, text=u"", style="H2.TLabel")
     pick_lbl.pack(anchor="w", pady=(px(6), 0))
-    hint2 = (u"Выбран магазин с самой свежей выгрузкой; нужен другой - щёлкните по нему. «Скрыть магазин» убирает его только из этой "
-             u"таблицы: файл выгрузки остаётся в папке, ничего не удаляется.")
+    hint2 = (u"Выбран магазин с самой свежей выгрузкой; нужен другой - щёлкните по нему (Ctrl / Shift - несколько). «Скрыть» убирает "
+             u"магазин только из таблицы: файл выгрузки остаётся в папке.")
     hid_lbl = wrap_label(c, hint2)
     hid_lbl.pack(fill="x", pady=(px(2), 0))
 
@@ -6014,30 +6018,33 @@ def run_app2(dirs=None, test_mode=False):
             return
         render_stores()
 
-    ttk.Label(rmode, text=u"Шаг 3. Как составлять список:", style="H2.TLabel").pack(side="left")
-    opts_btn = btn(rmode, u"Настроить...", lambda: toggle_opts(), lock=False, side_="right")
-    mode_lbl = wrap_label(rmode, u"", style="TLabel")
-    mode_lbl.pack(side="left", fill="x", expand=True, padx=px(8))
+    ttk.Label(rmode, text=u"Шаг 3. Режим:", style="H2.TLabel").pack(side="left")
+    opts_btn = btn(rmode, u"Настройки ▾", lambda: toggle_opts(), lock=False, side_="right")
+    mode_var = tk.StringVar(value="manual")
+    manual_var = tk.BooleanVar(value=True)
+    sweep_var = tk.BooleanVar(value=False)
+
+    def on_mode(*_):
+        m_ = mode_var.get()
+        manual_var.set(m_ == "manual")
+        sweep_var.set(m_ == "sweep")
+    for val_, txt_ in (("normal", u"Обычный"), ("manual", u"Ручной выбор"), ("sweep", u"Зачистка остатка")):
+        ttk.Radiobutton(rmode, text=txt_, value=val_, variable=mode_var, command=on_mode).pack(side="left", padx=(px(14), 0))
+    mrow = ttk.Frame(ra)
+    mrow.pack(fill="x", pady=(px(4), 0), after=rmode)
+    mode_lbl = wrap_label(mrow, u"", style="Hint.TLabel")
+    mode_lbl.pack(side="left", fill="x", expand=True)
     opts = ttk.Frame(ra)                                    # настройки режима: свёрнуты, пока их не откроют
     rm_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(opts, text=u"Вывозить и товар из матрицы, который на ЮА ещё не завозился", variable=rm_var).pack(anchor="w", pady=(px(8), 0))
-    manual_var = tk.BooleanVar(value=True)
-    man_cb = ttk.Checkbutton(opts, text=u"РУЧНОЙ ВЫБОР: сигареты и кеги - тоже в список вывоза", variable=manual_var)
-    man_cb.pack(anchor="w", pady=(px(6), 0))
-    wrap_label(opts, u"В список добавляются сигареты и кеги, которых обычно не вывозят (причина - в последней колонке листа), кроме тех, чей "
-                     u"поставщик отмечен «не вывозить» или ШК в списке «не вывозим». Всё остальное как обычно: товар поставщиков с галочкой, "
-                     u"список ШК, пакеты, стаканы и расходники, сырьё кофеаппарата, овощи, кулинария и выпечка в список НЕ попадают."
-               ).pack(fill="x", padx=(px(26), 0))
-    sweep_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(opts, text=u"ЗАЧИСТКА ОСТАТКА: вывезти всё, кроме заморозки, скоропортов и расходников (независимо от матрицы и ЮА)",
-                    variable=sweep_var).pack(anchor="w", pady=(px(6), 0))
+    rm_cb = ttk.Checkbutton(opts, text=u"Вывозить и товар из матрицы, который на ЮА ещё не завозился", variable=rm_var)
+    rm_cb.pack(anchor="w", pady=(px(8), 0))
 
     def open_keep():
         load_keep_shk(dirs)
         open_path(os.path.join(dirs.cache, KEEP_FILE))
     r = row(opts, px(8))
     btn(r, u"Поставщики: кого не вывозить...", lambda: open_suppliers_dialog(app, dirs, st["info"], on_save=sup_saved), lock=False)
-    btn(r, u"Список ШК, которые не вывозим (Excel)...", open_keep, lock=False)
+    btn(r, u"Список ШК «не вывозить» (Excel)...", open_keep, lock=False)
     sup_lbl = wrap_label(opts, u"")
     sup_lbl.pack(fill="x", pady=(px(4), 0))
 
@@ -6054,12 +6061,12 @@ def run_app2(dirs=None, test_mode=False):
     def mode_refresh(*_):
         n_, when_, _p = suppliers_file_info(dirs)
         if sweep_var.get():
-            t_, col_ = u"ЗАЧИСТКА ОСТАТКА: вывозим всё, кроме заморозки, скоропортов и расходников; матрица, ЮА и список поставщиков не учитываются.", AMB
+            t_, col_ = u"Вывозим всё, кроме заморозки, скоропортов и расходников. Матрица, ЮА и список поставщиков не учитываются.", AMB
         elif manual_var.get():
-            t_, col_ = (u"РУЧНОЙ ВЫБОР: сигареты и кеги - в список вывоза (причина - в последней колонке листа). Не вывозим: %d поставщиков "
+            t_, col_ = (u"Сигареты и кеги тоже попадут в список (причина - в последней колонке листа), лишнее удалите в Excel. Не вывозим: %d поставщиков "
                         u"с галочкой, список ШК, пакеты, расходники, сырьё кофе, овощи, кулинарию и выпечку." % n_), GRN
         else:
-            t_, col_ = (u"ОБЫЧНЫЙ РАСЧЁТ: не вывозим сигареты, кеги, расходники, кулинарию, список ШК и %d поставщиков из списка." % n_), "#1f2023"
+            t_, col_ = (u"Не вывозим сигареты, кеги, расходники, кулинарию, список ШК и %d поставщиков из списка." % n_), MUT
         if rm_var.get() and not sweep_var.get():
             t_ += u" Вывозим и товар из матрицы, который на ЮА ещё не завозился."
         mode_lbl.config(text=t_, foreground=col_)
@@ -6070,20 +6077,16 @@ def run_app2(dirs=None, test_mode=False):
         status(u"Поставщики сохранены: не вывозим %d" % n, GRN)
 
     def on_sweep(*_):
-        if sweep_var.get():
-            manual_var.set(False)
-            man_cb.config(state="disabled")
-        else:
-            man_cb.config(state="normal")
+        rm_cb.config(state="disabled" if sweep_var.get() else "normal")
         mode_refresh()
 
     def toggle_opts():
         if opts.winfo_ismapped():
             opts.pack_forget()
-            opts_btn.config(text=u"Настроить...")
+            opts_btn.config(text=u"Настройки ▾")
         else:
-            opts.pack(fill="x", pady=(px(6), 0), after=rmode)
-            opts_btn.config(text=u"Свернуть")
+            opts.pack(fill="x", pady=(px(2), 0), after=mrow)
+            opts_btn.config(text=u"Свернуть ▴")
     for v_ in (rm_var, manual_var):
         v_.trace_add("write", mode_refresh)
     sweep_var.trace_add("write", on_sweep)
@@ -6171,7 +6174,7 @@ def run_app2(dirs=None, test_mode=False):
             what, u"Это автоматический лист из папки ВЫВОЗ, а не исправленный вами (он лежит в «%s»).\n\n"
                   u"Продолжить именно с ним?" % CORR_DIR, parent=app, default="no")
 
-    p2 = nav_item("split", u"2   Распределение")
+    p2 = nav_item("split", u"2  Распределение")
     c = card(p2, u"Какой список распределяем (берётся только из папки «%s»)" % CORR_DIR)
     r = row(c)
     sp_var = tk.StringVar(value=u"")                        # полный путь выбранного листа (всегда из Корректировка_ЮА)
@@ -6276,10 +6279,10 @@ def run_app2(dirs=None, test_mode=False):
         open_path(fp) if fp and os.path.isfile(fp) else nores()
 
     r = row(p2)
-    btn(r, u"Распределить по торговым точкам", lambda: split_go(), primary=True)
-    btn(r, u"Открыть папку файлов ТСД", lambda: open_key("split", "out_dir"), lock=False)
-    btn(r, u"Открыть Распределение (Excel)", open_split_xlsx, lock=False)
-    note2 = ttk.Label(r, text=u"Результат: файлы ТСД (имя файла = адрес) и Распределение.xlsx - в папке «ТСД_по_адресам» рядом со списком.", style="Hint.TLabel")
+    btn(r, u"Распределить", lambda: split_go(), primary=True, side_="right")
+    btn(r, u"Папка файлов ТСД", lambda: open_key("split", "out_dir"), lock=False)
+    btn(r, u"Распределение (Excel)", open_split_xlsx, lock=False)
+    note2 = ttk.Label(r, text=u"Файлы ТСД и Распределение.xlsx - в «ТСД_по_адресам» рядом со списком.", style="Hint.TLabel")
     note2.pack(side="left", padx=px(8))
     tv2 = table(p2, (("addr", u"Куда (адрес)", 280, "w"), ("pos", u"Позиций", 90, "e"), ("qty", u"Единиц", 100, "e"),
                      ("sum", u"Сумма, грн", 120, "e")), 6)
@@ -6312,7 +6315,7 @@ def run_app2(dirs=None, test_mode=False):
                lambda: run_split(dirs, fp, top_n=n, skip_rc=skip, auto_points=auto), done)
 
     # ================= НОВЫЙ ДЕНЬ =================
-    p5 = nav_item("upd", u"3   Новый день")
+    p5 = nav_item("upd", u"3  Подчистка списка")
     c = card(p5, u"Исправленный лист вывоза (не меняется)")
     r = row(c)
     up_var = tk.StringVar(value=corrected_default())
@@ -6352,9 +6355,9 @@ def run_app2(dirs=None, test_mode=False):
         open_path(fp) if fp and os.path.isfile(fp) else nores()
 
     r = row(p5)
-    btn(r, u"Убрать то, что уже пришло на ЮА", lambda: upd_go(), primary=True)
-    btn(r, u"Открыть папку обновления", lambda: open_key("upd", "out_dir"), lock=False)
-    btn(r, u"Открыть список удалённого (Excel)", open_removed, lock=False)
+    btn(r, u"Подчистить список", lambda: upd_go(), primary=True, side_="right")
+    btn(r, u"Папка обновления", lambda: open_key("upd", "out_dir"), lock=False)
+    btn(r, u"Список удалённого (Excel)", open_removed, lock=False)
     note3 = ttk.Label(r, text=u"", style="Hint.TLabel")
     note3.pack(side="left", padx=px(8))
     tv3 = table(p5, (("bc", u"ШК", 120, "w"), ("name", u"Название", 260, "w"), ("qty", u"Кол-во", 70, "e"),
@@ -6363,13 +6366,13 @@ def run_app2(dirs=None, test_mode=False):
     def upd_go():
         fp = up_var.get().strip()
         if not fp or not os.path.isfile(fp):
-            messagebox.showinfo(u"Новый день", u"Выберите исправленный лист вывоза (xlsx).", parent=app)
+            messagebox.showinfo(u"Подчистка списка", u"Выберите исправленный лист вывоза (xlsx).", parent=app)
             return
-        if not raw_list_ok(fp, u"Новый день"):
+        if not raw_list_ok(fp, u"Подчистка списка"):
             return
         wh = list(st.get("upd_wh") or [])
         if not wh:
-            messagebox.showinfo(u"Новый день", u"Выберите «Состояние склада» Склад ЮА.", parent=app)
+            messagebox.showinfo(u"Подчистка списка", u"Выберите «Состояние склада» Склад ЮА.", parent=app)
             return
         shp = list(st.get("upd_shop") or [])
 
@@ -6378,18 +6381,18 @@ def run_app2(dirs=None, test_mode=False):
             tv3.delete(*tv3.get_children())
             for d in st["upd"].get("removed", []):
                 tv3.insert("", "end", values=(d["bc"], d["name"], d["qty"], d["why"], d["where"]))
-            journal(u"Новый день: убрать пришедшее", _update_text(st["upd"]))
+            journal(u"Подчистка списка", _update_text(st["upd"]))
             ok, n = st["upd"].get("ok"), len(st["upd"].get("removed", []))
             warn = any(x.startswith(u"ВНИМАНИЕ") for x in st["upd"].get("notes", []))
             note3.config(text=(u"Ошибки - см. «Журнал»" if not ok else
                                (u"Удалено: %d" % n if n else u"Ничего не стало ЮА-шным")) + (u" · есть предупреждения" if warn else u""),
                          foreground=RED if (not ok or warn) else MUT)
             if not ok:
-                status(u"Новый день: есть ошибки", RED)
-        run_bg(u"Убираю пришедшее", lambda: run_update(dirs, fp, wh, shop_paths=shp), done)
+                status(u"Подчистка списка: есть ошибки", RED)
+        run_bg(u"Подчистка списка", lambda: run_update(dirs, fp, wh, shop_paths=shp), done)
 
     # ================= ИНВЕНТАРИЗАЦИЯ ЮА (ФИНАЛ) =================
-    pf = nav_item("fin", u"4   Инвентаризация ЮА")
+    pf = nav_item("fin", u"4  Инвентаризация ЮА")
     c = card(pf, u"Финальная выгрузка Family")
     r = row(c)
     ttk.Label(r, text=u"Магазин:").pack(side="left")
@@ -6417,9 +6420,9 @@ def run_app2(dirs=None, test_mode=False):
         open_path(os.path.join(d_, fs_[0])) if fs_ else nores()
 
     r = row(pf)
-    btn(r, u"Собрать файл инвентаризации", lambda: fin_go(), primary=True)
-    btn(r, u"Открыть папку результата", lambda: open_key("final", "out_dir"), lock=False)
-    btn(r, u"Открыть сверку (Excel)", open_final_xlsx, lock=False)
+    btn(r, u"Собрать файл инвентаризации", lambda: fin_go(), primary=True, side_="right")
+    btn(r, u"Папка результата", lambda: open_key("final", "out_dir"), lock=False)
+    btn(r, u"Сверка (Excel)", open_final_xlsx, lock=False)
     note4 = ttk.Label(r, text=u"", style="Hint.TLabel")
     note4.pack(side="left", padx=px(8))
     tvf = table(pf, (("part", u"Часть", 300, "w"), ("pos", u"Позиций", 90, "e"), ("qty", u"Единиц", 100, "e"),
@@ -6451,10 +6454,11 @@ def run_app2(dirs=None, test_mode=False):
         run_bg(u"Финальная инвентаризация", lambda: run_final_inventory(dirs, shop_, state_path=fp_), done)
 
     # ================= 3. СЕРВИС =================
-    p3 = nav_item("serv", u"5   Сервис")
+    tk.Frame(side, bg="#3a3b40", height=1).pack(fill="x", padx=px(20), pady=px(10))
+    p3 = nav_item("serv", u"Сервис")
     c = card(p3, u"Проверка")
     r = row(c)
-    btn(r, u"Проверить программу (самотест)", lambda: run_bg(u"Самотест", self_test, lambda ok, out: (
+    btn(r, u"Запустить самотест", lambda: run_bg(u"Самотест", self_test, lambda ok, out: (
         journal(u"Самотест: %s" % (u"OK" if ok else u"ПРОВАЛ"), out), show("log"))), primary=True)
     ttk.Label(r, text=u"проверяет расчёты на тестовых данных, результат - в «Журнале»", style="Hint.TLabel").pack(side="left")
     c = card(p3, u"Таблица соответствия ШК Family - ЮА")
@@ -6488,7 +6492,7 @@ def run_app2(dirs=None, test_mode=False):
         btn(r, text, (lambda q=pth: open_path(q)), lock=False)
 
     # ================= 4. ЖУРНАЛ =================
-    p4 = nav_item("log", u"6   Журнал")
+    p4 = nav_item("log", u"Журнал")
     c = card(p4, expand=True)
     r = row(c)
 
@@ -6501,8 +6505,8 @@ def run_app2(dirs=None, test_mode=False):
         app.clipboard_clear()
         app.clipboard_append(jt.get("1.0", "end"))
         status(u"Журнал скопирован", GRN)
-    btn(r, u"Скопировать журнал", jcopy, lock=False)
-    btn(r, u"Очистить журнал", jclear, lock=False)
+    btn(r, u"Скопировать", jcopy, lock=False)
+    btn(r, u"Очистить", jclear, lock=False)
     fr = ttk.Frame(c)
     fr.pack(fill="both", expand=True, pady=(px(8), 0))
     jt = tk.Text(fr, wrap="word", font=("Consolas", 9), relief="flat", borderwidth=0, padx=px(8), pady=px(6),
