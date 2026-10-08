@@ -3704,8 +3704,14 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     try:
         wb.save(xp)
         files.append(xp)
-    except PermissionError:
-        info["problems"].append(u"Распределение.xlsx занят (закройте в Excel): txt записаны, xlsx нет")
+    except PermissionError:                               # файл открыт в Excel: сводку пишем под новым именем, а не теряем
+        xp2 = os.path.join(out_dir, u"Распределение_%s.xlsx" % datetime.now().strftime("%H%M%S"))
+        try:
+            wb.save(xp2)
+            files.append(xp2)
+            info["notes"] = list(info.get("notes") or []) + [u"Распределение.xlsx открыт в Excel: актуальная сводка записана в %s" % os.path.basename(xp2)]
+        except PermissionError:
+            info["problems"].append(u"Распределение.xlsx занят (закройте в Excel): txt записаны, xlsx нет")
     info["ok"] = not info["problems"]
     info["out_dir"], info["files"] = out_dir, files
     for addr in order:
