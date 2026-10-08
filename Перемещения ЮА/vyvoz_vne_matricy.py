@@ -756,7 +756,7 @@ class Ref(object):
     pass
 
 
-def make_ref(matrix_df, recode_df=None, coffee_df=None, ua_df=None, hist_df=None, pairs=None):
+def make_ref(matrix_df, recode_df=None, coffee_df=None, ua_df=None, hist_df=None, pairs=None, ua_map=None):
     r = Ref()
     r.matrix, r.matrix_names = {}, {}
     st = matrix_df["status"] if "status" in matrix_df.columns else [u""] * len(matrix_df)
@@ -789,6 +789,7 @@ def make_ref(matrix_df, recode_df=None, coffee_df=None, ua_df=None, hist_df=None
                 if str(b0).strip() and str(b0).lower() not in ("nan", "none"):
                     r.ua_bc.setdefault(k, str(b0).strip())
     r.pairs = {bc_key(a): bc_key(b) for a, b in (pairs or {}).items() if bc_key(a) and bc_key(b)}
+    r.ua_map = {bc_key(a): bc_key(b) for a, b in (ua_map or {}).items() if bc_key(a) and bc_key(b)}     # таблица соответствия Family -> ЮА
     r.ua_base, r.ua_name_by_key = {}, {}              # ЮА: название без «1 шт»/упаковки -> (ШК, название); ШК -> название
     for lst in r.ua_names.values():
         for k2, _src, nm2 in lst:
@@ -1001,10 +1002,15 @@ def classify_stock(agg, ref, use_ua=True, remove_not_on_ua=False, excl_suppliers
             supplier = ref.matrix[mkey][2]
             sup_src = u"матрица" if supplier else u""
             src = ref.ua_keys.get(key) or ref.ua_keys.get(mkey)
+            mp = getattr(ref, "ua_map", {}).get(key) or getattr(ref, "ua_map", {}).get(mkey)
             if not use_ua:
                 v, reason = "IN", u"в матрице"
             elif src:
                 v, reason = "IN", u"в матрице, заведён на ЮА (%s)%s" % (src, _inv_mark(src))
+            elif mp and mp in ref.ua_keys:
+                v, reason = "IN_UA_NAME", u"в матрице; на ЮА под другим ШК (таблица соответствия)"
+                ok_, on_, os_ = mp, ref.ua_name_by_key.get(mp, u""), ref.ua_keys[mp]
+                inv_bc = _ua_bc(ref, mp)                       # в файл инвентаризации - ШК, который знает ЮА
             else:
                 cand = [c for c in ref.ua_names.get(nn, []) if c[0] not in (key, mkey)]
                 if cand:
@@ -1032,6 +1038,11 @@ def classify_stock(agg, ref, use_ua=True, remove_not_on_ua=False, excl_suppliers
             elif src:
                 v, reason = "CHECK1", u"заведён на ЮА (по ШК)%s" % _inv_mark(src)
                 ok_, on_, os_ = u"", u"", src      # тот же ШК: «другого» нет, где найден - в «Источнике»
+            elif use_ua and getattr(ref, "ua_map", {}).get(key) in ref.ua_keys:
+                mp = ref.ua_map[key]
+                v, reason = "CHECK1", u"заведён на ЮА под другим ШК (таблица соответствия)"
+                ok_, on_, os_ = mp, ref.ua_name_by_key.get(mp, u""), ref.ua_keys[mp]
+                inv_bc = _ua_bc(ref, mp)
             elif cand:
                 v, reason = "CHECK1", u"заведён на ЮА под другим ШК (по названию)%s" % _inv_mark(cand[0][1])
                 ok_, on_, os_ = ", ".join(sorted(set(c[0] for c in cand))[:3]), cand[0][2], cand[0][1]
@@ -1652,7 +1663,8 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
     if ref is None and not R.errors:
         fr = load_reference(dirs)
         if fr is not None:
-            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], ua_df, fr["hist"], pairs=load_shk_pairs(dirs))
+            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], ua_df, fr["hist"], pairs=load_shk_pairs(dirs),
+                           ua_map=load_ua_map(dirs)[0])
     if ref is not None and use_ua:
         inm = sum(1 for k in set(ua_df["key"]) if k in ref.matrix)
         R.check("INFO", u"Склад ЮА и матрица",
@@ -2562,6 +2574,7 @@ def self_test(gui=False):
         shutil.rmtree(tp_, ignore_errors=True)
     _selftest_split_update(ck)
     _selftest_sweep(ck)
+    _selftest_map(ck)
 
     reset_report()
     if fails:
@@ -2571,6 +2584,72 @@ def self_test(gui=False):
         return False
     R.check("OK", "Самотест вывоза", "все контрольные случаи совпали")
     return True
+
+
+def _selftest_map(ck):
+    """Таблица соответствия ШК: оценка пар, список кандидатов, загрузка решений, применение в расчёте."""
+    t1, t2 = _map_tokens(u"ХД Тест Напій Лісовий 0,5л"), _map_tokens(u"Тест Напій Лісовий 0,5л з/б")
+    c1 = _map_score(t1, t2, _map_norm(u"ХД Тест Напій Лісовий 0,5л"), _map_norm(u"Тест Напій Лісовий 0,5л з/б"), 9)
+    ck(c1[0] == "A" and c1[2], "пара: префикс ХД и «з/б» не мешают: %s" % (c1,))
+    c2 = _map_score(_map_tokens(u"Стакан Паперовий 175мл"), _map_tokens(u"Стакан Паперовий 250мл"), u"стакан паперовий 175мл", u"стакан паперовий 250мл", 9)
+    ck(c2[0] in ("C", "-") and not c2[2] and u"ЧИСЛА РАЗНЫЕ" in c2[3], "разный объём - не уверенная пара: %s" % (c2,))
+    c3 = _map_score(_map_tokens(u"Х.Ц.З. Сіль 1кг"), _map_tokens(u"Сіль ХЦЗ 1кг"), _map_norm(u"Х.Ц.З. Сіль 1кг"), _map_norm(u"Сіль ХЦЗ 1кг"), 9)
+    ck(c3[0] == "A", "Х.Ц.З. = ХЦЗ, порядок слов не важен: %s" % (c3,))
+    ck(_lev2("4823098203162", "4823098303162") == 1 and _lev2("1234567", "7654321") == 9, "расстояние между ШК")
+    FA, FB = _ean("482003000011"), _ean("482003000028")
+    UA1, UA2 = _ean("293808000011"), _ean("482003000029")
+    tmp = tempfile.mkdtemp(prefix="vyvoz_map_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        _write_state_xlsx(os.path.join(d.ua_wh, u"Состояние склада Полевая склад ЮА 08.10.2026.xlsx"), u"Полевая-Склад ЮА",
+                          [(UA1, u"ХД Тест Напій Лісовий 0,5л", 4, u"шт", 10.0), (UA2, u"Тест Сік Яблуко 1л", 2, u"шт", 20.0)],
+                          shop_name=u"Полевая-Склад ЮА")
+        _write_state_xlsx(os.path.join(d.stores, u"Состояние склада Тест Магазин на 08.10.2026.xlsx"), u"Тест Магазин",
+                          [(FA, u"Тест Напій Лісовий 0,5л з/б", 5, u"шт", 10.0), (FB, u"Тест Сок Яблуко 1л", 3, u"шт", 20.0)])
+        matrix = pd.DataFrame([(FA, u"Тест Напій Лісовий 0,5л з/б", "ok", u"Пост"), (FB, u"Тест Сок Яблуко 1л", "ok", u"Пост")],
+                              columns=["barcode", "product_name", "status", "supplier"])
+        reset_report()
+        ua_df, _ui = load_ua(d)
+        ref = make_ref(matrix, None, None, ua_df, None)
+        info = run_map_list(d, ref=ref)
+        ck(info["ok"] and info["stats"]["pool"] == 2 and info["stats"]["A"] == 2, "список соответствия: 2 позиции ЮА, обе с уверенной парой: %s %s"
+           % (info.get("problems"), info.get("stats")))
+        wb = load_workbook(info["path"], data_only=True)
+        rows = list(wb[u"Кандидаты"].iter_rows(values_only=True))
+        by_ua = {str(r[3]): r for r in rows[1:]}
+        ck(by_ua.get(bc_key(UA1)) is not None or by_ua.get(UA1) is not None, "в списке есть позиция ЮА")
+        r1 = by_ua.get(UA1) or by_ua.get(bc_key(UA1))
+        ck(r1 is not None and str(r1[8]) == FA, "кандидат 1 для ХД Тест Напій = ШК Family %s: %s" % (FA, r1[8] if r1 else None))
+        # решения: первая пара ТАК, вторая НЕТ
+        wb2 = load_workbook(info["path"])
+        ws2 = wb2[u"Кандидаты"]
+        for row_ in ws2.iter_rows(min_row=2):
+            if str(row_[3].value) == UA1:
+                row_[0].value = u"ТАК"
+            elif str(row_[3].value) == UA2:
+                row_[0].value = u"НЕТ"
+        dec = os.path.join(tmp, u"решения.xlsx")
+        wb2.save(dec)
+        imp = run_map_import(d, dec)
+        ck(imp["ok"] and imp["added"] == 1 and imp["rejected"] == 1, "загрузка решений: %s" % imp)
+        yes, no = load_ua_map(d)
+        ck(yes == {bc_key(FA): bc_key(UA1)} and (bc_key(FB), bc_key(UA2)) in no, "таблица пар прочитана: %s %s" % (yes, no))
+        info2 = run_map_list(d, ref=ref)
+        ck(info2["ok"] and info2["stats"]["pool"] == 1 and info2["stats"]["A"] == 0, "после решений: ЮА с парой не в списке, отклонённый кандидат не предлагается: %s" % info2.get("stats"))
+        # применение: Family-позиция с парой в таблице = заведена на ЮА, в инвентаризацию идёт ШК ЮА
+        raw = pd.DataFrame([(FA, u"Тест Напій Лісовий 0,5л з/б", 5, u"шт", 10.0)], columns=["raw", "name", "qty", "unit", "cost"])
+        raw["shop"] = "Тест Магазин"
+        raw["bc"] = [rz.restore_barcode(rz.fmt_barcode(v_))[0] for v_ in raw["raw"]]
+        raw["key"] = [bc_key(v_) for v_ in raw["raw"]]
+        agg, _i = prepare_stock(raw)
+        r_no = classify_stock(agg, make_ref(matrix, None, None, ua_df, None), True, True, set(), set())
+        r_yes = classify_stock(agg, make_ref(matrix, None, None, ua_df, None, ua_map=yes), True, True, set(), set())
+        ck(r_no["verdict"].iloc[0] == "VYVOZ" and r_yes["verdict"].iloc[0] == "IN_UA_NAME" and r_yes["inv_bc"].iloc[0] == UA1,
+           "таблица соответствия: без неё вывозили бы, с ней остаётся и идёт в инвентаризацию под ШК ЮА: %s -> %s %s"
+           % (r_no["verdict"].iloc[0], r_yes["verdict"].iloc[0], r_yes["inv_bc"].iloc[0]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _selftest_sweep(ck):
@@ -3743,7 +3822,7 @@ def _split_shops(text):
 def _parse_args(argv):
     a = {"selftest": False, "auto": False, "shops": None, "no_ua": False, "offline": False, "rm": False,
          "excl": [], "incl": [], "split": None, "day": None, "top": None, "with_rc": False, "no_rc": False, "update": None,
-         "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False}
+         "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None}
     it = iter(argv)
     for x in it:
         t = x.lower().lstrip("-/")
@@ -3771,6 +3850,10 @@ def _parse_args(argv):
             a["no_rc"] = True
         elif t == "sweep":                        # зачистка остатка: вывезти всё, кроме заморозки, скоропортов и расходников
             a["sweep"] = True
+        elif t == "map-list":                     # список кандидатов для таблицы соответствия ШК Family <-> ЮА (Excel)
+            a["map_list"] = True
+        elif t == "map-import":                   # загрузить решения из этого списка в Справочник\vyvoz_ua_map.csv
+            a["map_import"] = next(it, "")
         elif t in ("auto-points", "auto_points"):   # число точек по сумме: 5-7 тыс. грн на точку
             a["auto_points"] = True
         elif t in ("final-inventory", "final"):   # финальный файл инвентаризации ЮА из выгрузки Family после вывоза
@@ -4210,7 +4293,7 @@ def run_update(dirs, path, wh_paths, shop_paths=None, ref=None):
     if ref is None:
         try:
             fr = load_reference(dirs)
-            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], None, fr["hist"]) if fr else None
+            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], None, fr["hist"], ua_map=load_ua_map(dirs)[0]) if fr else None
         except Exception as e:
             ref = None
             info["notes"].append(u"Справочник перекодировки недоступен (%s): сверка только по ШК" % e)
@@ -4227,7 +4310,7 @@ def run_update(dirs, path, wh_paths, shop_paths=None, ref=None):
                 return kk
             if ref is None:
                 return None
-            for c in (_resolve(ref, kk), pairs.get(kk)):
+            for c in (_resolve(ref, kk), pairs.get(kk), getattr(ref, "ua_map", {}).get(kk)):
                 if c and c in d:
                     return c
             return rmap.get(_resolve(ref, kk))
@@ -4430,6 +4513,321 @@ def _update_text(info):
     return u"\n".join(L)
 
 
+# ======================= ТАБЛИЦА СООТВЕТСТВИЯ ШК Family <-> ЮА =======================
+# На ЮА один и тот же товар заведён под другим ШК и названием (внутренние коды 2938080..., опечатки ШК, префиксы ХД/МВУ/
+# Продбаза/Джамп, «Х.Ц.З.» вместо «ХЦЗ»). Здесь: 1) список кандидатов пар для ручной проверки (Excel), 2) загрузка ваших решений
+# в Справочник\vyvoz_ua_map.csv, 3) применение таблицы в расчёте (позиция Family с парой на ЮА считается заведённой на ЮА,
+# в инвентаризацию идёт ШК ЮА). В BigQuery (barcode_recode_map) отсюда ничего не пишется: это делает проект матрицы.
+
+UA_MAP_FILE = u"vyvoz_ua_map.csv"
+MAP_DIR = u"Соответствие"
+MAP_COLS = [u"ШК Family", u"ШК ЮА", u"Название Family", u"Название ЮА", u"Статус", u"Дата", u"Файл"]
+_MAP_NOISE = {u"хд", u"мву", u"джамп", u"продбаза", u"корона", u"упаковка", u"шт", u"1шт", u"з/б", u"ж/б"}
+_MAP_PACK_RE = re.compile(r"(\(\*?\d+\)|упаковка|\(\d+\s*шт\))")
+
+
+def load_ua_map(dirs):
+    """Таблица соответствия: ({ШК Family без нулей: ШК ЮА без нулей} со статусом ТАК, {(ШК Family, ШК ЮА)} со статусом НЕТ)."""
+    path = os.path.join(dirs.cache, UA_MAP_FILE)
+    yes, no = {}, set()
+    try:
+        if os.path.isfile(path):
+            df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+            for f, u, st in zip(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 4]):
+                kf, ku = bc_key(f), bc_key(u)
+                if not (kf and ku):
+                    continue
+                if str(st).strip().upper() == u"ТАК":
+                    yes[kf] = ku
+                elif str(st).strip().upper() == u"НЕТ":
+                    no.add((kf, ku))
+    except Exception as e:
+        R.check("WARN", u"Таблица соответствия ШК Family-ЮА", u"не прочитана (%s): работаю без неё" % e)
+    return yes, no
+
+
+def save_ua_map(dirs, rows):
+    """Дописывает решения (список dict по MAP_COLS) в Справочник\\vyvoz_ua_map.csv; одинаковая пара не дублируется, новое решение заменяет старое."""
+    path = os.path.join(dirs.cache, UA_MAP_FILE)
+    os.makedirs(dirs.cache, exist_ok=True)
+    old = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig") if os.path.isfile(path) else pd.DataFrame(columns=MAP_COLS)
+    old.columns = MAP_COLS[:len(old.columns)] if len(old.columns) <= len(MAP_COLS) else old.columns
+    new = pd.DataFrame(rows, columns=MAP_COLS)
+    allr = pd.concat([old, new], ignore_index=True)
+    allr["_k"] = [bc_key(a) + u"|" + bc_key(b) for a, b in zip(allr[MAP_COLS[0]], allr[MAP_COLS[1]])]
+    allr = allr.drop_duplicates("_k", keep="last").drop(columns="_k")
+    allr.to_csv(path, index=False, encoding="utf-8-sig")
+    return len(allr)
+
+
+def _map_norm(s):
+    t = str(s).lower().replace(u"’", u"'").replace(u"`", u"'").replace(u"*", u"'").replace(u"ё", u"е")
+    t = re.sub(r"(\d),(\d)", r"\1.\2", t)
+    t = re.sub(r"(\d+(?:\.\d+)?)\s*(л|кг|гр|г|мл|шт|l|ml)\b", lambda m: m.group(1) + {u"гр": u"г"}.get(m.group(2), m.group(2)), t)
+    for _ in range(2):
+        t = re.sub(r"(?<=[а-яіїєґa-z])\.(?=[а-яіїєґa-z])", u"", t)          # Х.Ц.З. -> хцз
+    return re.sub(r"[^0-9a-zа-яіїєґ.' /]", u" ", t)
+
+
+def _map_tokens(s):
+    out = []
+    for t in _map_norm(s).split():
+        t = t.strip(u".'")
+        if t and t not in _MAP_NOISE and not re.fullmatch(r"20\d\d", t):
+            out.append(t)
+    return out
+
+
+def _lev2(a, b):
+    """Расстояние Левенштейна для ШК; больше 2 - сразу 9."""
+    if abs(len(a) - len(b)) > 2:
+        return 9
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1] if prev[-1] <= 2 else 9
+
+
+def _map_score(ut, ft, ustr, fstr, ed):
+    """-> (уверенность A/B/C/-, сходство 0..1, совпали ли числа/объёмы, пояснение)"""
+    aw, bw = set(t for t in ut if not re.search(r"\d", t)), set(t for t in ft if not re.search(r"\d", t))
+    sim = 0.0
+    if aw and bw:
+        inter = len(aw & bw)
+        sim = max(inter / float(len(aw | bw)), 0.9 * inter / float(min(len(aw), len(bw))) if min(len(aw), len(bw)) >= 2 else 0.0)
+    if sim < 0.9:
+        qa, qb = ustr.replace(u" ", u""), fstr.replace(u" ", u"")
+        sm = difflib.SequenceMatcher(None, qa, qb)
+        if sm.quick_ratio() >= 0.75:
+            sim = max(sim, 0.9 * sm.ratio())
+    nums_eq = set(t for t in ut if re.search(r"\d", t)) == set(t for t in ft if re.search(r"\d", t))
+    why = []
+    if ed <= 2:
+        why.append(u"ШК отличается на %d зн." % ed)
+    if sim >= 0.9:
+        why.append(u"название почти совпало")
+    elif sim >= 0.7:
+        why.append(u"название похоже")
+    if not nums_eq:
+        why.append(u"ОБЪЁМ/ВЕС/ЧИСЛА РАЗНЫЕ")
+    if (ed <= 2 and sim >= 0.5 and nums_eq) or (sim >= 0.9 and nums_eq):
+        c = u"A"
+    elif sim >= 0.75 and nums_eq:
+        c = u"B"
+    elif sim >= 0.55:
+        c = u"C"
+    else:
+        c = u"-"
+    return c, sim, nums_eq, u"; ".join(why)
+
+
+def run_map_list(dirs, ref=None, per_item=3):
+    """Список кандидатов для таблицы соответствия: позиции ЮА, у которых нет пары в Family (ни по ШК, ни по перекодировке, ни по названию),
+    и до 3 похожих позиций Family (матрица + остатки магазинов из ВХОД_ВЫВОЗ\\МАГАЗИНЫ). Решения проставляются в Excel, загружаются --map-import.
+    -> dict(ok, path, problems, stats)"""
+    reset_report()
+    dirs.ensure()
+    info = {"ok": False, "problems": [], "path": u"", "stats": {}}
+    try:
+        yes, no = load_ua_map(dirs)
+        ua_df, _ui = load_ua(dirs)
+        if ref is None:
+            fr = load_reference(dirs)
+            if fr is None:
+                info["problems"].append(u"Справочник (матрица) не загружен")
+                return info
+            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], ua_df, fr["hist"], pairs=load_shk_pairs(dirs), ua_map=yes)
+        stores = scan_stores(dirs)
+    except Exception as e:
+        info["problems"].append(u"Данные не прочитаны: %s: %s" % (type(e).__name__, e))
+        return info
+    # остатки на ЮА (склад / магазин) для справки
+    qty_wh, qty_shop = {}, {}
+    for folder, dst in ((dirs.ua_wh, qty_wh), (dirs.ua_stores, qty_shop)):
+        files = list_xlsx(folder)
+        if files:
+            try:
+                dst.update({k: q for k, (q, _f) in _read_ua_keys([_pick_latest(files)])[0].items()})
+            except Exception:
+                pass
+    # Family: матрица + остатки магазинов
+    fam = {}
+    for k, (nm, _st, sup) in ref.matrix.items():
+        fam[k] = {"name": nm, "src": [u"матрица"], "qty": 0.0, "sup": sup}
+    for shop, (fp, df) in stores.items():
+        lab = u"%s %s" % (shop, guess_day(fp)[0].strftime("%d.%m"))
+        for r in df[df["qty"] > 0].itertuples():
+            e = fam.setdefault(r.key, {"name": r.name, "src": [], "qty": 0.0, "sup": u""})
+            e["src"].append(lab)
+            e["qty"] += float(r.qty)
+    ua_keys = set(ua_df["key"])
+    ua_names = ref.ua_names
+    claimed, unmatched = set(), {}
+    for k, e in fam.items():
+        c = _resolve(ref, k)
+        if k in ua_keys or c in ua_keys:
+            claimed.add(k if k in ua_keys else c)
+        elif nname(e["name"]) in ua_names:
+            claimed.update(x[0] for x in ua_names[nname(e["name"])])
+        elif yes.get(k) in ua_keys:
+            claimed.add(yes[k])
+        elif k in ref.pairs and ref.pairs[k] in ua_keys:
+            claimed.add(ref.pairs[k])
+        else:
+            unmatched[k] = e
+    pool = ua_df[~ua_df["key"].isin(claimed)].drop_duplicates("key")
+    ftok = {k: (_map_tokens(e["name"]), _map_norm(e["name"])) for k, e in unmatched.items()}
+    rows = []
+    for r in pool.itertuples():
+        ut, ustr = _map_tokens(r.name), _map_norm(r.name)
+        nn = nname(r.name)
+        cls = u"Сигареты" if CIG_ANY_RE.search(nn) else (u"Упаковка / штучный" if _MAP_PACK_RE.search(nn) else u"Обычный")
+        uk = r.key.lstrip(u"0")
+        cands = []
+        for k, (ft, fstr) in ftok.items():
+            if (k, r.key) in no or (k.lstrip(u"0"), uk) in no:
+                continue
+            ed = _lev2(uk, k.lstrip(u"0"))
+            if not (set(ut) & set(ft)) and ed > 2 and not (set(fstr.split()) & set(ustr.split())):
+                continue
+            c, sim, neq, why = _map_score(ut, ft, ustr, fstr, ed)
+            if c != u"-":
+                cands.append((u"ABC".index(c), -sim, k, c, sim, why))
+        cands.sort()
+        best = cands[:per_item]
+        rows.append({"cls": cls, "conf": best[0][3] if best else u"-", "key": r.key, "name": r.name, "src": r.src,
+                     "q_wh": qty_wh.get(r.key), "q_shop": qty_shop.get(r.key),
+                     "cands": [(b[2], fam[b[2]]["name"], u"; ".join(fam[b[2]]["src"][:3]) + (u" (ост. %g)" % round(fam[b[2]]["qty"], 3) if fam[b[2]]["qty"] else u""),
+                                u"%s %.2f%s" % (b[3], b[4], (u": " + b[5]) if b[5] else u"")) for b in best]})
+    order = {u"A": 0, u"B": 1, u"C": 2, u"-": 3}
+    rows.sort(key=lambda x: ({u"Обычный": 0, u"Упаковка / штучный": 1, u"Сигареты": 2}[x["cls"]], order[x["conf"]], x["name"]))
+    out_dir = os.path.join(dirs.base, MAP_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, u"Соответствие_ШК_%s.xlsx" % datetime.now().strftime("%Y-%m-%d_%H%M"))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = u"Инструкция"
+    for ln in (u"СПИСОК ДЛЯ ТАБЛИЦЫ СООТВЕТСТВИЯ ШК Family <-> ЮА",
+               u"",
+               u"Что это. Позиции ЮА, у которых нет пары в Family ни по ШК, ни по перекодировке, ни по названию, и до трёх похожих позиций Family.",
+               u"Что делать. На листе «Кандидаты» в первой колонке напишите: ТАК (или 1) - это первый кандидат; 2 или 3 - второй / третий;",
+               u"штрих-код Family - если верный товар другой; НЕТ - не пара. Пустые строки пропускаются. Сохраните файл.",
+               u"Потом: python vyvoz_vne_matricy.py --map-import \"путь к файлу\" (или Сервис -> «Загрузить решения»). Пары попадут в Справочник\\vyvoz_ua_map.csv.",
+               u"Как читать уверенность: A - ШК отличается на 1-2 знака или название почти совпало, числа (объём, вес) те же; B - название похоже, числа те же;",
+               u"C - только похоже, ПРОВЕРЬТЕ вкус, объём, граммовку. «ОБЪЁМ/ВЕС/ЧИСЛА РАЗНЫЕ» - скорее всего другой товар.",
+               u"Пара из этой таблицы работает так: позиция Family считается заведённой на ЮА, в файл инвентаризации ЮА идёт ШК ЮА.",
+               u"В BigQuery (barcode_recode_map) отсюда ничего не пишется."):
+        ws.append([ln])
+    ws.column_dimensions["A"].width = 150
+    ws = wb.create_sheet(u"Кандидаты")
+    head = [u"Решение", u"Уверенность", u"Класс", u"ШК ЮА", u"Название ЮА", u"Остаток ЮА: склад", u"Остаток ЮА: магазин", u"Где в реестре ЮА"]
+    for n in (1, 2, 3):
+        head += [u"%d: ШК Family" % n, u"%d: Название Family" % n, u"%d: Где есть в Family" % n, u"%d: Сходство / почему" % n]
+    ws.append(head)
+    for x in rows:
+        line = [None, x["conf"], x["cls"], str(x["key"]), x["name"], x["q_wh"], x["q_shop"], x["src"]]
+        for n in range(3):
+            line += list(x["cands"][n]) if n < len(x["cands"]) else [None, None, None, None]
+        ws.append(line)
+    for col in (4, 9, 13, 17):
+        for row_ in ws.iter_rows(min_row=2, min_col=col, max_col=col):
+            for c0 in row_:
+                c0.number_format = "@"
+    for c0 in ws[1]:
+        c0.font = Font(bold=True)
+    for j, w in enumerate([10, 11, 16, 15, 44, 10, 10, 26] + [15, 44, 34, 30] * 3, 1):
+        ws.column_dimensions[get_column_letter(j)].width = w
+    ws.freeze_panes = "E2"
+    ws.auto_filter.ref = ws.dimensions
+    import collections
+    stats = collections.Counter((x["cls"], x["conf"]) for x in rows)
+    ws = wb.create_sheet(u"Сводка")
+    ws.append([u"Показатель", u"Значение"])
+    ws.append([u"Позиций Family (матрица + остатки магазинов)", len(fam)])
+    ws.append([u"из них уже с парой на ЮА (ШК, перекодировка, название, пары, таблица)", len(fam) - len(unmatched)])
+    ws.append([u"Позиций ЮА без пары (в списке)", len(rows)])
+    ws.append([u"Подтверждённых пар в таблице / отклонённых", u"%d / %d" % (len(yes), len(no))])
+    for (cls, c), n in sorted(stats.items()):
+        ws.append([u"%s, уверенность %s" % (cls, c), n])
+    ws.column_dimensions["A"].width = 70
+    try:
+        wb.save(path)
+    except PermissionError:
+        info["problems"].append(u"Файл занят: %s" % path)
+        return info
+    info.update({"ok": True, "path": path, "stats": {"fam": len(fam), "matched": len(fam) - len(unmatched), "pool": len(rows),
+                                                    "A": sum(1 for x in rows if x["conf"] == u"A"), "B": sum(1 for x in rows if x["conf"] == u"B"),
+                                                    "C": sum(1 for x in rows if x["conf"] == u"C"), "yes": len(yes), "no": len(no)}})
+    return info
+
+
+def run_map_import(dirs, path):
+    """Решения из списка кандидатов -> Справочник\\vyvoz_ua_map.csv. ТАК/1/2/3 - пара, штрих-код - своя пара, НЕТ - отклонить показанных кандидатов."""
+    reset_report()
+    info = {"ok": False, "problems": [], "added": 0, "rejected": 0, "skipped": 0}
+    try:
+        wb = load_workbook(path, data_only=True)
+        ws = wb[u"Кандидаты"] if u"Кандидаты" in wb.sheetnames else wb.worksheets[0]
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+    except Exception as e:
+        info["problems"].append(u"Файл не прочитан: %s" % e)
+        return info
+    if not rows:
+        info["problems"].append(u"Пустой файл")
+        return info
+    out, today = [], datetime.now().strftime("%Y-%m-%d")
+    base = os.path.basename(path)
+    for r in rows[1:]:
+        dec = str(r[0]).strip() if r[0] is not None else u""
+        if not dec:
+            continue
+        ukey, uname = rz.fmt_barcode(r[3]), str(r[4] or u"")
+        cands = [(rz.fmt_barcode(r[8 + 4 * n]), str(r[9 + 4 * n] or u"")) for n in range(3) if len(r) > 9 + 4 * n and r[8 + 4 * n] not in (None, u"")]
+        d = dec.upper()
+        pick = None
+        if d in (u"ТАК", u"ДА", u"1", u"+", u"YES") and len(cands) >= 1:
+            pick = cands[0]
+        elif d == u"2" and len(cands) >= 2:
+            pick = cands[1]
+        elif d == u"3" and len(cands) >= 3:
+            pick = cands[2]
+        elif re.fullmatch(r"\d{6,14}", dec):
+            pick = (dec, u"(указано вручную)")
+        if pick:
+            out.append(dict(zip(MAP_COLS, [pick[0], ukey, pick[1], uname, u"ТАК", today, base])))
+            info["added"] += 1
+        elif d in (u"НЕТ", u"-", u"NO", u"Н"):
+            for fk, fn in cands:
+                out.append(dict(zip(MAP_COLS, [fk, ukey, fn, uname, u"НЕТ", today, base])))
+            info["rejected"] += 1
+        else:
+            info["skipped"] += 1
+    if out:
+        try:
+            save_ua_map(dirs, out)
+        except Exception as e:
+            info["problems"].append(u"Таблица не записана: %s" % e)
+            return info
+    info["ok"] = True
+    return info
+
+
+def _map_text(info):
+    L = [u"[ОШИБКА] " + p for p in info.get("problems", [])]
+    if info.get("path"):
+        s = info.get("stats", {})
+        L += [u"Файл: %s" % info["path"],
+              u"Позиций Family %d, с парой на ЮА %d; позиций ЮА без пары %d (уверенность A: %d, B: %d, C: %d); в таблице пар %d, отклонено %d"
+              % (s.get("fam", 0), s.get("matched", 0), s.get("pool", 0), s.get("A", 0), s.get("B", 0), s.get("C", 0), s.get("yes", 0), s.get("no", 0))]
+    if "added" in info:
+        L.append(u"Загружено: пар %d, отклонено строк %d, пропущено (пусто / не понято) %d" % (info["added"], info["rejected"], info["skipped"]))
+    return u"\n".join(L)
+
+
 FINAL_INV_PREFIX = u"Инвентаризация_ЮА_"
 SHEET_FIN = u"Инвентаризация ЮА"
 SHEET_FIN_OUT = u"Не идёт в инвентаризацию"
@@ -4477,7 +4875,8 @@ def run_final_inventory(dirs, shop, state_path=None, ref=None, use_ua=True, day=
             if fr is None:
                 info["problems"].append(u"Справочник (матрица) не загружен: " + u"; ".join(d_ for s_, n_, d_ in R.checks if s_ == "ERROR"))
                 return info
-            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], ua_df, fr["hist"], pairs=load_shk_pairs(dirs))
+            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], ua_df, fr["hist"], pairs=load_shk_pairs(dirs),
+                           ua_map=load_ua_map(dirs)[0])
         agg, _pinfo = prepare_stock(df)
         agg = merge_recoded_duplicates(agg, ref)
         # remove_not_on_ua=True: те же правила кулинарии и штучных, что и в основном прогоне (они применяются к «вывозимым»)
@@ -5128,6 +5527,30 @@ def run_app2(dirs=None, test_mode=False):
     btn(r, u"Запустить самотест", lambda: run_bg(u"Самотест", self_test, lambda ok, out: (
         journal(u"Самотест: %s" % (u"OK" if ok else u"ПРОВАЛ"), out), show("log"))), primary=True)
     ttk.Label(r, text=u"проверяет расчёты на тестовых данных, результат - в «Журнале»", style="Hint.TLabel").pack(side="left")
+    c = card(p3, u"Таблица соответствия ШК Family - ЮА")
+    r = row(c)
+
+    def map_list_done(res, out):
+        journal(u"Список соответствия ШК", _map_text(res or {}))
+        if (res or {}).get("path"):
+            open_path(res["path"])
+        else:
+            messagebox.showwarning(u"Список соответствия", _map_text(res or {}) or u"Не получилось", parent=app)
+
+    def map_import_go():
+        fp = filedialog.askopenfilename(parent=app, title=u"Список соответствия с вашими решениями",
+                                        initialdir=os.path.join(dirs.base, MAP_DIR) if os.path.isdir(os.path.join(dirs.base, MAP_DIR)) else dirs.base,
+                                        filetypes=[(u"Excel", "*.xlsx *.xlsm"), (u"Все файлы", "*.*")])
+        if not fp:
+            return
+
+        def done(res, out):
+            journal(u"Загрузка решений по соответствию ШК", _map_text(res or {}))
+            messagebox.showinfo(u"Соответствие ШК", _map_text(res or {}), parent=app)
+        run_bg(u"Загружаю решения", lambda: run_map_import(dirs, fp), done)
+    btn(r, u"Составить список (Excel)", lambda: run_bg(u"Список соответствия ШК", lambda: run_map_list(dirs), map_list_done), primary=True)
+    btn(r, u"Загрузить решения...", map_import_go)
+    btn(r, u"Таблица пар (Excel)", lambda: (load_ua_map(dirs), open_path(os.path.join(dirs.cache, UA_MAP_FILE))), lock=False)
     c = card(p3, u"Папки")
     r = row(c)
     for text, pth in ((u"Данные", dirs.base), (u"Входные выгрузки", dirs.inp), (u"Результаты", dirs.out),
@@ -5202,6 +5625,14 @@ def main(argv=None):
     if args["split"]:
         info = run_split(DIRS, args["split"], shop=(args["shops"] or [None])[0], day=args["day"], top_n=args["top"], skip_rc=args["no_rc"])
         print(_split_text(info))
+        return 0 if info.get("ok") else 2
+    if args["map_list"]:
+        info = run_map_list(DIRS)
+        print(_map_text(info))
+        return 0 if info.get("ok") else 2
+    if args["map_import"]:
+        info = run_map_import(DIRS, args["map_import"])
+        print(_map_text(info))
         return 0 if info.get("ok") else 2
     if args["sweep"]:
         if not args["shops"]:
