@@ -29,3 +29,15 @@ __pycache__/
 !**/_build/box_check.py
 !**/_build/box_check.csv
 **/_СОСТОЯНИЕ/backup/
+
+# --- вывоз вне матрицы: входы, результаты, кэш BigQuery ---
+ВХОД_ВЫВОЗ/
+ВЫВОЗ/
+vyvoz_*.csv
+vyvoz_cache_meta.json
+
+# --- вывоз: сборка onedir (exe + vyvoz_lib), бэкапы скрипта, рабочие листы, сгенерированные иконки ---
+vyvoz_lib/
+_АРХИВ/
+Корректировка_ЮА/
+**/Справочник/*.ico
