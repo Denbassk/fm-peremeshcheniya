@@ -2690,6 +2690,7 @@ def self_test(gui=False):
         shutil.rmtree(tp_, ignore_errors=True)
     _selftest_split_update(ck)
     _selftest_kegs(ck)
+    _selftest_split_min(ck)
     _selftest_manual_rules(ck)
     _selftest_sweep(ck)
     _selftest_window(ck)
@@ -3020,6 +3021,45 @@ def _selftest_kegs(ck):
         ck(u"продавался" in wy.get(K1, u"") and u"нигде не продавался" in wy.get(K3, u"") and u"РЦ" not in wy.get(K1, u""),
            "кеги: основание маршрута понятно: %s | %s" % (wy.get(K1), wy.get(K3)))
         ck(any(u"Кеги" in n_ for n_ in info.get("notes", [])), "кеги: в итоге есть пометка, что на РЦ они не едут")
+    finally:
+        g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"] = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_split_min(ck):
+    """Распределение «по сумме»: ни одна точка не получает меньше 5 тыс. грн, кеги только на выбранные точки."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_min_")
+    g = globals()
+    saved = (g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"])
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        shop, day_s = u"Тест Магазин", u"08.10.2026"
+        P1, P2, P3, KG = (_ean("4821004000%02d" % n) for n in (21, 22, 23, 24))
+        items = [(P1, u"Товар прямой 1", 40, u"шт", 400.0, u"Прям"),     # 16 000
+                 (P2, u"Товар прямой 2", 30, u"шт", 200.0, u"Прям"),     # 6 000
+                 (P3, u"Товар прямой 3", 3, u"шт", 10.0, u"Прям"),       # 30: мелочь, раньше уезжала на слабую точку
+                 (KG, u"БІР Кег Тест Мин 0,5л", 3, u"шт", 100.0, u"БІР")]  # продаётся только на точке вне выбранных
+        corr = os.path.join(tmp, CORR_DIR, u"Тест_Магазин.xlsx")
+        _write_vyvoz_list_xlsx(corr, shop, day_s, items)
+        g["fetch_route_history"] = lambda bcs, sh: {
+            bc_key(b): {"shop_rc": "", "shop_dir": "2026-09-01", "net_rc": "", "net_dir": "", "sup": "Прям"} for b in bcs}
+        st_ = [u"Т%02d" % i for i in range(1, 13)]
+        g["pick_top_shops"] = lambda ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP: pd.DataFrame(
+            {"store": st_[:n], "rev": ([1000.0, 300.0, 200.0, 150.0] + [100.0 - 5 * i for i in range(8)])[:n]})
+        all_sales = {(bc_key(KG), u"Т12"): 9.0, (bc_key(P3), u"Т04"): 5.0}
+        g["fetch_bc_sales"] = lambda bcs, stores, days=SPLIT_DAYS_BC: {
+            kk: v for kk, v in all_sales.items() if kk[0] in set(bc_key(b) for b in bcs) and kk[1] in set(stores)}
+        ref0 = make_ref(pd.DataFrame(columns=["barcode", "product_name", "status", "supplier"]))
+        info = run_split(d, corr, ref=ref0, auto_points=True)
+        ck(info["ok"], "по сумме: распределение прошло: %s" % info.get("problems"))
+        al_ = info.get("alloc")
+        sums = {} if al_ is None else al_.groupby("addr")["sum"].sum().to_dict()
+        ck(sums and all(v >= 5000.0 - 1e-6 for a_, v in sums.items() if a_ != SPLIT_RC_NAME),
+           "по сумме: на точку не меньше 5000 грн: %s" % {k: round(v) for k, v in sums.items()})
+        ck(abs(sum(sums.values()) - 22330.0) < 1e-6, "по сумме: весь товар распределён: %.2f" % sum(sums.values()))
+        ck(u"Т12" not in sums, "по сумме: кег не уезжает на точку вне выбранных: %s" % sorted(sums))
+        ck(len(sums) >= 2, "по сумме: товар делится, а не сваливается на одну точку: %s" % sorted(sums))
     finally:
         g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"] = saved
         shutil.rmtree(tmp, ignore_errors=True)
@@ -4005,25 +4045,51 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
             % (len(shops), direct_sum, per_shop[0], per_shop[1], direct_sum / max(1, len(shops)))]
     if keg_bcs:
         info["notes"] = list(info.get("notes") or []) + [
-            u"Кеги (%d поз.) на %s не едут: делятся по точкам, где этот ШК продавался за %d дн. (среди всех живых точек не на ЮА, в т.ч. вне топ-%d)"
-            % (len(keg_bcs), SPLIT_RC_NAME, SPLIT_DAYS_BC, info["top_n"])]
+            (u"Кеги (%d поз.) на %s не едут: делятся между выбранными точками, где этот ШК продавался за %d дн. (не продавался - по обороту)"
+             % (len(keg_bcs), SPLIT_RC_NAME, SPLIT_DAYS_BC)) if auto_points else
+            (u"Кеги (%d поз.) на %s не едут: делятся по точкам, где этот ШК продавался за %d дн. (среди всех живых точек не на ЮА, в т.ч. вне топ-%d)"
+             % (len(keg_bcs), SPLIT_RC_NAME, SPLIT_DAYS_BC, info["top_n"]))]
     n_rc = int((lst["kind"] == KIND_RC).sum())
     info["rc_skipped"] = n_rc if skip_rc else 0
     if skip_rc and n_rc:
         info["notes"] = list(info.get("notes") or []) + [u"На склад (РЦ) %d поз.: файл на %s не делаю (режим «без РЦ»), на точки не делю" % (n_rc, SPLIT_RC_NAME)]
 
-    alloc = []      # (адрес, ШК, количество)
-    for r in lst.itertuples(index=False):
-        if r.kind == KIND_RC:
-            if not skip_rc:
-                alloc.append((SPLIT_RC_NAME, r.bc, float(r.qty)))
-            continue
-        is_w = (r.unit == u"кг") or abs(r.qty - round(r.qty)) > 1e-9
-        step = rz.WEIGHT_STEP if is_w else 1.0
-        k_ = is_keg(r.name)
-        sh = keg_shares(r.bc, list(alive["store"]), rev_all, keg_sales)[0] if k_ else shop_shares(r.bc, shops, rev, sales)
-        for s, q in allocate_qty(r.qty, sh, step, SPLIT_KEG_MIN if k_ else SPLIT_MIN).items():
-            alloc.append((s, r.bc, q))
+    def _alloc(pts):
+        out_ = []      # (адрес, ШК, количество)
+        for r in lst.itertuples(index=False):
+            if r.kind == KIND_RC:
+                if not skip_rc:
+                    out_.append((SPLIT_RC_NAME, r.bc, float(r.qty)))
+                continue
+            is_w = (r.unit == u"кг") or abs(r.qty - round(r.qty)) > 1e-9
+            step = rz.WEIGHT_STEP if is_w else 1.0
+            k_ = is_keg(r.name)
+            if k_:          # «по сумме»: кеги только на выбранные точки, иначе мелочь уезжает на точки вне списка
+                sh = keg_shares(r.bc, pts, rev, keg_sales)[0] if auto_points else keg_shares(r.bc, list(alive["store"]), rev_all, keg_sales)[0]
+            else:
+                sh = shop_shares(r.bc, pts, rev, sales)
+            for s, q in allocate_qty(r.qty, sh, step, SPLIT_KEG_MIN if k_ else SPLIT_MIN).items():
+                out_.append((s, r.bc, q))
+        return out_
+
+    cost_ = {b: float(c) for b, c in zip(lst["bc"], lst["cost"])}
+    alloc, dropped = _alloc(shops), []
+    while auto_points and len(shops) > 1:           # точка с суммой меньше per_shop[0] выбывает, её товар делится между остальными
+        sums = {}
+        for a_, b_, q_ in alloc:
+            sums[a_] = sums.get(a_, 0.0) + q_ * cost_.get(b_, 0.0)
+        low = [s_ for s_ in shops if sums.get(s_, 0.0) < per_shop[0] - 1e-6]
+        if not low:
+            break
+        w_ = min(low, key=lambda s_: (sums.get(s_, 0.0), rev.get(s_, 0.0)))
+        shops.remove(w_)
+        dropped.append(u"%s (%.0f грн)" % (w_, sums.get(w_, 0.0)))
+        alloc = _alloc(shops)
+    if dropped:
+        info["top_n"] = len(shops)
+        info["notes"] = list(info.get("notes") or []) + [
+            u"Меньше %.0f грн на точку не везём: убраны %s; их товар разделён между остальными (точек: %d)"
+            % (per_shop[0], u", ".join(dropped), len(shops))]
     al = pd.DataFrame(alloc, columns=["addr", "bc", "qty"])
     if al.empty:
         info["notes"] = list(info.get("notes") or []) + [u"Позиций с прямой доставкой нет: распределять на точки нечего"]
@@ -6489,7 +6555,8 @@ def main(argv=None):
         print(_final_text(info))
         return 0 if info.get("ok") else 2
     if args["split"]:
-        info = run_split(DIRS, args["split"], shop=(args["shops"] or [None])[0], day=args["day"], top_n=args["top"], skip_rc=args["no_rc"])
+        info = run_split(DIRS, args["split"], shop=(args["shops"] or [None])[0], day=args["day"], top_n=args["top"], skip_rc=args["no_rc"],
+                         auto_points=args["auto_points"])
         print(_split_text(info))
         return 0 if info.get("ok") else 2
     if args["map_list"]:
