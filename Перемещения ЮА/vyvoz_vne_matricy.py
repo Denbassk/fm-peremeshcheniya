@@ -797,6 +797,11 @@ def make_ref(matrix_df, recode_df=None, coffee_df=None, ua_df=None, hist_df=None
                     r.ua_bc.setdefault(k, str(b0).strip())
     r.pairs = {bc_key(a): bc_key(b) for a, b in (pairs or {}).items() if bc_key(a) and bc_key(b)}
     r.ua_map = {bc_key(a): bc_key(b) for a, b in (ua_map or {}).items() if bc_key(a) and bc_key(b)}     # таблица соответствия Family -> ЮА
+    r.ua_recoded = {}             # склейка barcode_recode_map «ШК ЮА -> ШК матрицы» в обратную сторону: ШК Family/матрицы -> ШК ЮА
+    for k in r.ua_keys:
+        t = _resolve(r, k)
+        if t != k and t not in r.ua_keys:
+            r.ua_recoded.setdefault(t, k)
     r.ua_base, r.ua_name_by_key = {}, {}              # ЮА: название без «1 шт»/упаковки -> (ШК, название); ШК -> название
     for lst in r.ua_names.values():
         for k2, _src, nm2 in lst:
@@ -1026,6 +1031,7 @@ def classify_stock(agg, ref, use_ua=True, remove_not_on_ua=False, excl_suppliers
             sup_src = u"матрица" if supplier else u""
             src = ref.ua_keys.get(key) or ref.ua_keys.get(mkey)
             mp = getattr(ref, "ua_map", {}).get(key) or getattr(ref, "ua_map", {}).get(mkey)
+            rc = getattr(ref, "ua_recoded", {}).get(key) or getattr(ref, "ua_recoded", {}).get(mkey)
             if not use_ua:
                 v, reason = "IN", u"в матрице"
             elif src:
@@ -1034,6 +1040,10 @@ def classify_stock(agg, ref, use_ua=True, remove_not_on_ua=False, excl_suppliers
                 v, reason = "IN_UA_NAME", u"в матрице; на ЮА под другим ШК (таблица соответствия)"
                 ok_, on_, os_ = mp, ref.ua_name_by_key.get(mp, u""), ref.ua_keys[mp]
                 inv_bc = _ua_bc(ref, mp)                       # в файл инвентаризации - ШК, который знает ЮА
+            elif rc and rc in ref.ua_keys:
+                v, reason = "IN_UA_NAME", u"в матрице; на ЮА под другим ШК (склейка barcode_recode_map)"
+                ok_, on_, os_ = rc, ref.ua_name_by_key.get(rc, u""), ref.ua_keys[rc]
+                inv_bc = _ua_bc(ref, rc)
             else:
                 cand = [c for c in ref.ua_names.get(nn, []) if c[0] not in (key, mkey)]
                 if cand:
@@ -1066,6 +1076,11 @@ def classify_stock(agg, ref, use_ua=True, remove_not_on_ua=False, excl_suppliers
                 v, reason = "CHECK1", u"заведён на ЮА под другим ШК (таблица соответствия)"
                 ok_, on_, os_ = mp, ref.ua_name_by_key.get(mp, u""), ref.ua_keys[mp]
                 inv_bc = _ua_bc(ref, mp)
+            elif use_ua and getattr(ref, "ua_recoded", {}).get(key) in ref.ua_keys:
+                rc = ref.ua_recoded[key]
+                v, reason = "CHECK1", u"заведён на ЮА под другим ШК (склейка barcode_recode_map)"
+                ok_, on_, os_ = rc, ref.ua_name_by_key.get(rc, u""), ref.ua_keys[rc]
+                inv_bc = _ua_bc(ref, rc)
             elif cand:
                 v, reason = "CHECK1", u"заведён на ЮА под другим ШК (по названию)%s" % _inv_mark(cand[0][1])
                 ok_, on_, os_ = ", ".join(sorted(set(c[0] for c in cand))[:3]), cand[0][2], cand[0][1]
@@ -2763,6 +2778,10 @@ def _selftest_map(ck):
         info_n = run_map_list(d, ref=make_ref(matrix, None, None, ua_df, hist_), per_item=0)     # кандидатов нет ни у кого
         ck(info_n["ok"] and info_n["stats"]["pool"] == 1,
            "тот же ШК есть в базе Family, похожих нет - пара не нужна, в список не идёт: %s" % info_n.get("stats"))
+        rec_ = pd.DataFrame({"old_barcode": [UA1], "new_barcode": [FA]})      # склейка проекта матрицы: ШК ЮА -> ШК матрицы
+        info_rc = run_map_list(d, ref=make_ref(matrix, rec_, None, ua_df, None))
+        ck(info_rc["ok"] and info_rc["stats"]["pool"] == 1,
+           "склеенный в barcode_recode_map ШК ЮА (ЮА -> матрица) не попадает в список без пары: %s" % info_rc.get("stats"))
         info = run_map_list(d, ref=ref)                                        # файл списка снова полный (имя файла - до минуты)
         wb = load_workbook(info["path"], data_only=True)
         rows = list(wb[u"Кандидаты"].iter_rows(values_only=True))
@@ -2797,6 +2816,10 @@ def _selftest_map(ck):
         ck(r_no["verdict"].iloc[0] == "VYVOZ" and r_yes["verdict"].iloc[0] == "IN_UA_NAME" and r_yes["inv_bc"].iloc[0] == UA1,
            "таблица соответствия: без неё вывозили бы, с ней остаётся и идёт в инвентаризацию под ШК ЮА: %s -> %s %s"
            % (r_no["verdict"].iloc[0], r_yes["verdict"].iloc[0], r_yes["inv_bc"].iloc[0]))
+        r_rc = classify_stock(agg, make_ref(matrix, rec_, None, ua_df, None), True, True, set(), set())
+        ck(r_rc["verdict"].iloc[0] == "IN_UA_NAME" and r_rc["inv_bc"].iloc[0] == UA1 and u"barcode_recode_map" in r_rc["reason"].iloc[0],
+           "склейка ЮА -> матрица: позиция матрицы остаётся и идёт в инвентаризацию под ШК ЮА: %s %s %s"
+           % (r_rc["verdict"].iloc[0], r_rc["inv_bc"].iloc[0], r_rc["reason"].iloc[0]))
     finally:
         g_["fetch_family_keys"] = saved_fk
         shutil.rmtree(tmp, ignore_errors=True)
@@ -5363,8 +5386,11 @@ def run_map_list(dirs, ref=None, per_item=3):
     claimed, unmatched = set(), {}
     for k, e in fam.items():
         c = _resolve(ref, k)
+        rc = ref.ua_recoded.get(k) or ref.ua_recoded.get(c)
         if k in ua_keys or c in ua_keys:
             claimed.add(k if k in ua_keys else c)
+        elif rc in ua_keys:                        # ШК ЮА уже склеен с этим ШК в barcode_recode_map
+            claimed.add(rc)
         elif nname(e["name"]) in ua_names:
             claimed.update(x[0] for x in ua_names[nname(e["name"])])
         elif yes.get(k) in ua_keys:
