@@ -73,7 +73,9 @@ WEIGHT_STEP    = 0.1       # шаг округления весового тов
 BQ_PROJECT  = "family-market-analytics"
 BQ_TABLE    = "family-market-analytics.family_market.transfer_pack_v5"
 BQ_MANUAL   = "family-market-analytics.family_market.transfer_pack_manual"
+BQ_RECODE   = "family-market-analytics.family_market.barcode_recode_map"   # старый ШК -> новый (ЮА -> матрица)
 REF_FILE    = os.path.join(BASE_DIR, "Справочник", "transfer_pack.csv")  # кэш и офлайн-фолбэк
+RECODE_FILE = os.path.join(BASE_DIR, "Справочник", "barcode_recode_map.csv")  # кэш перекодировки ШК
 REF_TTL_H   = 12          # свежесть кэша, часов; старше - идём в BQ
 REF_OFFLINE = False       # True -> в BQ не ходить вообще, только кэш
 
@@ -493,6 +495,82 @@ def self_test():
         R.check("ERROR", "Тест связок", "60 при связке 50 не дало 100")
         return False
     R.check("OK", "Тест связок", "60 -> 100, 101 -> 150 (всегда вверх)")
+
+    # База ЮА: те же магазины под именем с «ЮА», одна точка переименована
+    ubad = []
+    for nm, exp in [(u"Качанівська 19 ЮА", (u"Качанівська 19", True)),
+                    (u"качанівська 19 юа", (u"качанівська 19", True)),
+                    (u"ЮА Качанівська 19", (u"Качанівська 19", True)),
+                    (u"Качанівська 19 ЮA", (u"Качанівська 19", True)),   # латинская A
+                    (u"Болградська 38 ЮА", (u"Грозненська 38", True)),
+                    (u"Зерновая 6/5 ЮА", (u"Зернова 6/5", True)),
+                    (u"Качанівська 19", (u"Качанівська 19", False)),
+                    (u"Іскрінський 19", (u"Іскрінський 19", False)),
+                    (u"Болградська 38", (u"Болградська 38", False))]:
+        if ua_split(nm) != exp:
+            ubad.append("%s -> %s (ожидалось %s)" % (nm, ua_split(nm), exp))
+    ua2, fm2 = [u"Качанівська 19 ЮА", u"Болградська 38 ЮА"], [u"Байрона 156", u"Зернова 6/5"]
+    for shops, exp in [(ua2, "ua"), (fm2, "fm"), (ua2 + fm2, "mixed")]:
+        if file_base(shops) != exp:
+            ubad.append("база файла %s -> %s (ожидалось %s)" % (shops, file_base(shops), exp))
+
+    tue = date(2026, 10, 6)                      # вторник, куст B
+    full_b = list(ROUTES["B"])
+
+    def _rc(shops):
+        use, chk = route_compare(tue, shops)
+        return use, [c[0] for c in chk], " | ".join(c[2] for c in chk)
+
+    use, st, det = _rc(full_b)
+    if use != "B" or "WARN" in st:
+        ubad.append("Family, весь куст B: %s %s" % (use, det[:120]))
+    # все восемь точек, которые знаем на ЮА (адреса даны владельцем 09.10)
+    ua_all = [u"Байрона 138/1 ЮА", u"Байрона 156 ЮА", u"Зерновая 6/5 ЮА", u"Ньютона 111 ЮА",
+              u"Байрона 163 ЮА", u"Ньютона 102 ЮА", u"Качанівська 19 ЮА", u"Болградська 38 ЮА"]
+    use, st, det = _rc(ua_all)
+    if use != "B" or "WARN" in st or u"в файле 8 из 13" not in det:
+        ubad.append("файл ЮА со всеми восемью точками: %s %s" % (use, det[:160]))
+    moved = [u"Байрона 138/1", u"Байрона 156", u"Зернова 6/5", u"Ньютона 111", u"Байрона 163",
+             u"Ньютона 102", u"Качанівська 19", u"Грозненська 38"]
+    use, st, det = _rc([s for s in full_b if s not in moved])
+    if "WARN" in st:
+        ubad.append("Family без перешедших на ЮА точек дал предупреждение: %s" % det[:120])
+    if u"все 5 магазинов на месте" not in det:
+        ubad.append("перешедшие на ЮА точки посчитаны как «на месте»: %s" % det[:160])
+    use, st, det = _rc([s for s in full_b if s != u"Танкопія 16"])
+    if "WARN" not in st or u"Танкопія 16" not in det:
+        ubad.append("пропажа обычной точки Family перестала замечаться: %s" % det[:120])
+    use, st, det = _rc(ua2)
+    if use != "B" or "WARN" in st:
+        ubad.append("файл ЮА с двумя точками куста B: %s %s" % (use, det[:120]))
+    use, st, det = _rc([u"Качанівська 19 ЮА", u"Бучми 32 ЮА"])
+    if "WARN" not in st or u"Бучми 32" not in det:
+        ubad.append("точка чужого куста в файле ЮА не замечена: %s" % det[:120])
+
+    for shops, exp in [(ua2, "2026-10-06_ЮА"), (fm2, "2026-10-06"), (ua2 + fm2, "2026-10-06")]:
+        if out_day_name(tue, shops) != exp:
+            ubad.append("папка результата %s -> %s (ожидалось %s)"
+                        % (shops, out_day_name(tue, shops), exp))
+    # справочник упаковок для ЮА: ШК ЮА берёт запись своего ШК в матрице (barcode_recode_map)
+    ref_t = {u"4820017000130": {"unit_type": "sht_nedelimyy", "step": 6.0}}
+    pairs_t = {u"4820182062568": u"4820017000130",    # ЮА -> матрица, цель в справочнике
+               u"4823127313923": u"4820111111111",    # цели в справочнике нет
+               u"4820017000130": u"4820182062568"}    # свой ШК уже в справочнике: не трогаем
+    added = apply_recode_to_ref(ref_t, pairs_t)
+    if added != 1:
+        ubad.append("перекодировка справочника добавила %s записей (ожидалась 1)" % added)
+    if ref_t.get(u"4820182062568", {}).get("step") != 6.0:
+        ubad.append("ШК ЮА не получил упаковку по перекодировке")
+    if u"4823127313923" in ref_t:
+        ubad.append("перекодировка на ШК без упаковки создала пустую запись")
+    if ref_t[u"4820017000130"].get("step") != 6.0 or \
+            ref_t[u"4820182062568"] is ref_t[u"4820017000130"]:
+        ubad.append("перекодировка испортила прямую запись или дала общий объект")
+    if ubad:
+        R.check("ERROR", "Тест базы ЮА", "; ".join(ubad))
+        return False
+    R.check("OK", "Тест базы ЮА",
+            "суффикс ЮА, Болградська=Грозненська, 8 точек, куст, отдельная папка, перекодировка")
     return True
 
 # ==================== ЧТЕНИЕ ИСТОЧНИКА =======================
@@ -594,7 +672,16 @@ ROUTE_BY_DOW = {0: "A", 1: "B", 2: "C", 3: "A", 4: "B", 5: "C"}   # пн..сб
 
 # Точки, отсутствие которых в выгрузке - норма, а не пропажа.
 # Убрать из ROUTES совсем, когда закроются окончательно.
-ROUTE_PAUSED = {}   # напр. {u"Адрес": u"магазин закрывается"}
+# Точки, перешедшие на ЮА Маркет (адреса даны владельцем 09.10.2026): в ведомости
+# Family их нет, считаются файлом базы ЮА. Новый переход = строка здесь.
+ROUTE_PAUSED = {u"Байрона 138/1": u"переведена на ЮА, считается в файле базы ЮА",
+                u"Байрона 156": u"переведена на ЮА, считается в файле базы ЮА",
+                u"Байрона 163": u"переведена на ЮА, считается в файле базы ЮА",
+                u"Зернова 6/5": u"переведена на ЮА, считается в файле базы ЮА",
+                u"Ньютона 102": u"переведена на ЮА, считается в файле базы ЮА",
+                u"Ньютона 111": u"переведена на ЮА, считается в файле базы ЮА",
+                u"Качанівська 19": u"переведена на ЮА, считается в файле базы ЮА",
+                u"Грозненська 38": u"переведена на ЮА (там Болградська 38 ЮА)"}
 
 # Улицы переименованы, в старых выгрузках и графике встречаются прежние
 # названия - это те же самые магазины.
@@ -624,6 +711,45 @@ def route_key(s):
     return re.sub(r"[/\\.-]", "", t)
 
 
+# База ЮА - те же магазины в другой базе Торгсофта: к имени добавлено «ЮА»,
+# одна точка при переходе переименована. route_key, ROUTE_ALIASES и safe_name
+# здесь не трогаем: ими пользуется vyvoz_vne_matricy.py, а там «Качанівська 19»
+# и «Качанівська 19 ЮА» - разные точки.
+UA_RENAMES = {u"Болградська 38": u"Грозненська 38",    # имя в базе ЮА -> имя в графике
+              u"Зерновая 6/5": u"Зернова 6/5"}
+UA_DIR_SUFFIX = u"_ЮА"    # заказы ЮА - отдельная папка: в Торгсофте это другая программа
+_UA_TOKEN_RE = re.compile(r"^\s*ю[аa]\s+|\s+ю[аa]\s*$", re.IGNORECASE)   # a - и латинская
+
+
+def ua_split(name):
+    """(имя точки для графика, взята ли из базы ЮА). Слово «ЮА» в начале или в конце
+    отбрасывается, переименованная точка возвращается под именем из графика."""
+    s = re.sub(r"\s+", " ", str(name).strip())
+    base = _UA_TOKEN_RE.sub("", s, count=1).strip()
+    if base == s:
+        return s, False
+    key = route_key(base)
+    for ua_nm, fm_nm in UA_RENAMES.items():
+        if route_key(ua_nm) == key:
+            return fm_nm, True
+    return base, True
+
+
+def file_base(shops_in_file):
+    """"ua" - все точки из базы ЮА, "fm" - ни одной, "mixed" - вперемешку."""
+    flags = {ua_split(s)[1] for s in shops_in_file}
+    if flags == {True}:
+        return "ua"
+    return "mixed" if True in flags else "fm"
+
+
+def out_day_name(day, shops_in_file):
+    """Имя папки результата в ЗАКАЗЫ. Файл базы ЮА - своя папка, чтобы ТСД-файлы
+    Family и ЮА не смешались и расчёт одной базы не убрал в замену расчёт другой."""
+    ua = UA_DIR_SUFFIX if file_base(shops_in_file) == "ua" else ""
+    return day.strftime("%Y-%m-%d") + ua + dist_suffix()
+
+
 def check_route(day, shops_in_file):
     """Сверка состава магазинов с графиком отгрузки."""
     if dist_on():
@@ -631,10 +757,22 @@ def check_route(day, shops_in_file):
                 u"раздача с %s: куст не проверяем, точек в файле %d"
                 % (DIST_SOURCE_SHOP, len(set(shops_in_file))))
         return ROUTE_BY_DOW.get(day.weekday()) or "A"
+    use, checks = route_compare(day, shops_in_file)
+    for st, nm, det in checks:
+        R.check(st, nm, det)
+    return use
+
+
+def route_compare(day, shops_in_file):
+    """(куст, [(статус, имя, детали)]). Отчёт не пишет: check_route печатает,
+    самотест читает. В файле базы ЮА нехватка точек куста не замечание: остальные
+    точки куста живут в базе Family."""
+    out = []
+    ck = lambda st, nm, det: out.append((st, nm, det))
     alias = {route_key(k): route_key(v) for k, v in ROUTE_ALIASES.items()}
     have = {}
     for x in shops_in_file:
-        k = route_key(x)
+        k = route_key(ua_split(x)[0])
         have[alias.get(k, k)] = x
     scores = {k: len(have.keys() & {route_key(a) for a in v})
               for k, v in ROUTES.items()}
@@ -642,15 +780,15 @@ def check_route(day, shops_in_file):
     exp = ROUTE_BY_DOW.get(day.weekday())
 
     if exp is None:
-        R.check("WARN", u"График отгрузки",
-                u"%s - отгрузки нет, в файле похоже на куст %s"
-                % (DOW_RU[day.weekday()], best))
+        ck("WARN", u"График отгрузки",
+           u"%s - отгрузки нет, в файле похоже на куст %s"
+           % (DOW_RU[day.weekday()], best))
         use = best
     elif best != exp and scores[best] > scores.get(exp, 0):
-        R.check("WARN", u"График отгрузки",
-                u"дата %s это %s (куст %s), а состав магазинов похож на куст %s"
-                u" - проверьте дату или период выгрузки"
-                % (day.strftime("%d.%m.%Y"), DOW_RU[day.weekday()], exp, best))
+        ck("WARN", u"График отгрузки",
+           u"дата %s это %s (куст %s), а состав магазинов похож на куст %s"
+           u" - проверьте дату или период выгрузки"
+           % (day.strftime("%d.%m.%Y"), DOW_RU[day.weekday()], exp, best))
         use = best
     else:
         use = exp
@@ -660,23 +798,28 @@ def check_route(day, shops_in_file):
     extra = [have[k] for k in have
              if k not in {route_key(a) for a in want}]
 
-    paused = [a for a in miss if a in ROUTE_PAUSED]
-    miss = [a for a in miss if a not in ROUTE_PAUSED]
-    for a in paused:
-        R.check("INFO", u"Точка вне отгрузки", u"%s - %s" % (a, ROUTE_PAUSED[a]))
-    if miss:
-        R.check("WARN", u"Магазина нет в выгрузке",
-                u"куст %s, %s, не хватает %d из %d: %s"
-                % (use, DOW_RU[day.weekday()], len(miss), len(want),
-                   "; ".join(miss)))
+    if file_base(shops_in_file) == "ua":
+        ck("INFO", u"График отгрузки",
+           u"куст %s (%s), база ЮА: в файле %d из %d точек куста"
+           % (use, DOW_RU[day.weekday()], len(want) - len(miss), len(want)))
     else:
-        R.check("OK", u"График отгрузки",
-                u"куст %s (%s), все %d магазинов на месте"
-                % (use, DOW_RU[day.weekday()], len(want)))
+        paused = [a for a in miss if a in ROUTE_PAUSED]
+        miss = [a for a in miss if a not in ROUTE_PAUSED]
+        for a in paused:
+            ck("INFO", u"Точка вне отгрузки", u"%s - %s" % (a, ROUTE_PAUSED[a]))
+        if miss:
+            ck("WARN", u"Магазина нет в выгрузке",
+               u"куст %s, %s, не хватает %d из %d: %s"
+               % (use, DOW_RU[day.weekday()], len(miss), len(want),
+                  "; ".join(miss)))
+        else:
+            ck("OK", u"График отгрузки",
+               u"куст %s (%s), все %d магазинов на месте"
+               % (use, DOW_RU[day.weekday()], len(want) - len(paused)))
     if extra:
-        R.check("WARN", u"Магазин вне графика этого дня",
-                u"%s - в кусте %s его быть не должно" % ("; ".join(extra), use))
-    return use
+        ck("WARN", u"Магазин вне графика этого дня",
+           u"%s - в кусте %s его быть не должно" % ("; ".join(extra), use))
+    return use, out
 
 
 # ============ ВЫБОР ФАЙЛА, ДАТЫ И КОНТРОЛЬ ПОВТОРОВ ============
@@ -1553,6 +1696,77 @@ def load_reference():
         R.check("INFO", "Справочник: позиции на проверку",
                 ", ".join("%s: %d" % kv for kv in sorted(rv.items())))
     return out
+
+
+def refresh_recode_from_bq():
+    """Тянет перекодировку ШК в RECODE_FILE. -> (успех, сообщение)"""
+    if REF_OFFLINE:
+        return False, "включён режим офлайн (REF_OFFLINE=True)"
+    cred = find_credentials()
+    if not cred:
+        return False, ("не найден ключ: задай %s или положи json в %s"
+                       % (CRED_ENV, os.path.join(_HERE, "credentials")))
+    try:
+        from google.cloud import bigquery
+    except ImportError:
+        return False, "нет пакета: pip install google-cloud-bigquery db-dtypes"
+    try:
+        client = bigquery.Client(project=BQ_PROJECT)
+        d = client.query("SELECT old_barcode, new_barcode FROM `%s`" % BQ_RECODE).to_dataframe()
+    except Exception as e:
+        return False, "%s: %s" % (type(e).__name__, str(e).replace("\n", " ")[:200])
+    if d is None or d.empty:
+        return False, "запрос вернул 0 строк"
+    os.makedirs(os.path.dirname(RECODE_FILE), exist_ok=True)
+    d.astype(str).to_csv(RECODE_FILE, index=False, encoding="utf-8-sig")
+    return True, "%d пар, ключ %s" % (len(d), os.path.basename(cred))
+
+
+def load_recode():
+    """Перекодировка ШК (старый -> новый; ШК ЮА -> ШК матрицы): BigQuery с кэшем в
+    RECODE_FILE. Нужна только файлам базы ЮА. -> {старый ШК: новый ШК}"""
+    fresh = (os.path.exists(RECODE_FILE)
+             and (time.time() - os.path.getmtime(RECODE_FILE)) < REF_TTL_H * 3600)
+    if fresh:
+        R.check("INFO", "Перекодировка ШК: источник",
+                "кэш свежее %d ч, запрос в BigQuery не нужен" % REF_TTL_H)
+    else:
+        ok, msg = refresh_recode_from_bq()
+        if ok:
+            R.check("OK", "Перекодировка ШК: обновлена из BigQuery", msg)
+        elif os.path.exists(RECODE_FILE):
+            age = (time.time() - os.path.getmtime(RECODE_FILE)) / 3600.0
+            R.check("WARN", "Перекодировка ШК: BigQuery недоступен",
+                    "%s -> работаю по кэшу возрастом %.1f ч" % (msg, age))
+        else:
+            R.check("WARN", "Перекодировка ШК: BigQuery недоступен",
+                    "%s; кэша нет -> упаковки ЮА берутся только по их собственным ШК" % msg)
+    if not os.path.exists(RECODE_FILE):
+        return {}
+    try:
+        d = pd.read_csv(RECODE_FILE, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        pairs = list(zip(d["old_barcode"], d["new_barcode"]))
+    except Exception as e:
+        R.check("WARN", "Перекодировка ШК", "не удалось прочитать %s: %s" % (RECODE_FILE, e))
+        return {}
+    out = {}
+    for old, new in pairs:
+        o, n = (restore_barcode(fmt_barcode(x))[0] for x in (old, new))
+        if o and n and o != n:
+            out[o] = n
+    return out
+
+
+def apply_recode_to_ref(ref, pairs):
+    """ШК ЮА, которого нет в справочнике, получает копию записи своего нового ШК
+    (ШК матрицы). Собственная запись сильнее перекодировки. -> сколько записей добавлено.
+    Только в памяти: txt и xlsx остаются с ШК ЮА, его знает программа ЮА на терминале."""
+    added = 0
+    for old, new in pairs.items():
+        if old not in ref and new in ref:
+            ref[old] = dict(ref[new])
+            added += 1
+    return added
 
 def _norm_name(s: str) -> str:
     s = (s or "").lower()
@@ -3108,13 +3322,6 @@ def main():
         R.check("WARN", "Дата заказа",
                 "отстоит от сегодняшней на %d дн., проверьте имя файла" % off)
 
-    busy = locked_files(os.path.join(OUT_DIR, day.strftime("%Y-%m-%d")))
-    if busy:
-        R.check("ERROR", "Файлы прошлого расчёта заняты",
-                "закройте в Excel и запустите снова: %s"
-                % "; ".join(os.path.basename(b) for b in busy[:5]))
-        return 2
-
     hr = detect_header_row(src)
     R.check("OK" if hr == HEADER_ROW_HINT else "WARN", "Строка заголовков", hr)
 
@@ -3138,7 +3345,21 @@ def main():
 
     shops_all = sorted(set(w["shop"]))
     R.check("INFO", "Уникальных адресов", "%d: %s" % (len(shops_all), "; ".join(shops_all)))
+    db_kind = file_base(shops_all)
+    if db_kind == "ua":
+        R.check("INFO", "База", "ЮА: результат в ЗАКАЗЫ\\%s" % out_day_name(day, shops_all))
+    elif db_kind == "mixed":
+        R.check("WARN", "База",
+                "в файле точки и ЮА, и Family: результат в общую папку, ТСД-файлы "
+                "баз не разделены; выгружайте ведомости баз отдельно")
     check_route(day, shops_all)
+
+    busy = locked_files(os.path.join(OUT_DIR, out_day_name(day, shops_all)))
+    if busy:
+        R.check("ERROR", "Файлы прошлого расчёта заняты",
+                "закройте в Excel и запустите снова: %s"
+                % "; ".join(os.path.basename(b) for b in busy[:5]))
+        return 2
 
     names, collide = {}, []
     for s in shops_all:
@@ -3154,6 +3375,10 @@ def main():
 
     REF.clear()
     REF.update(load_reference())
+    if db_kind == "ua":
+        R.check("INFO", "Справочник ЮА",
+                "по перекодировке ШК добавлено упаковок: %d"
+                % apply_recode_to_ref(REF, load_recode()))
 
     orders = build_orders(w, weight_map)
     orders = replace_cups_with_packs(orders, w)
@@ -3175,7 +3400,7 @@ def main():
                 % (DIST_SOURCE_SHOP, os.path.basename(DIST_FILE)))
         if orders.empty:
             R.check("WARN", u"Раздача", u"ни одной точке ничего не нужно")
-    day_dir = os.path.join(OUT_DIR, day.strftime("%Y-%m-%d") + dist_suffix())
+    day_dir = os.path.join(OUT_DIR, out_day_name(day, shops_all))
     if do_clean:
         moved = clear_day_dir(day_dir)
         if moved:
