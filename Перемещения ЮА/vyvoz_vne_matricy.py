@@ -30,6 +30,7 @@
 """
 
 import os
+import types
 import re
 import sys
 import io
@@ -102,7 +103,10 @@ REPLACED_DIR = u"_замененные"
 
 # Что с полки не снимаем. Основа - списки из raschet_zakaza (розлив, овощи, кеги, кофе
 # из аппарата, крышки). Пакеты и стаканы там живут отдельно (is_bag / CUP_PACKS).
-SKIP_BC_EXTRA = ()                                          # ШК вручную
+SKIP_BC_EXTRA = {                                           # тех. товары вручную: не вывозим ни в каком режиме (ШК: название)
+    "4820189941194": u"Союз Майонез МакМай 600г Провансаль д/п",
+    "2938080055437": u"Союз Майонез МакМай 600г Провансаль д/п (внутренний ШК)",
+}
 CUP_BCS       = set(rz.CUP_PACKS) | set(v[0] for v in rz.CUP_PACKS.values())
 ACCESSORY_BCS = set([rz.BC_KRISHKA, rz.BC_RUCHKA]) | set(rz.BC_PLYASHKI_ALL)   # комплектация розлива
 RE_CUP        = re.compile(r"(^|\s)стакан")
@@ -1048,8 +1052,8 @@ def excl_reason(bc, key, name, ref):
     why = rz._dist_skip_row(bc, name, u"")      # ШК-список, розлив, овощи, кеги, кофе готовый, крышка стакана
     if why:
         return why
-    if bc in SKIP_BC_EXTRA:
-        return u"ШК в списке исключений (вручную)"
+    if bc in SKIP_BC_EXTRA or key in SKIP_BC_EXTRA:
+        return u"тех. товар (ШК в списке исключений вручную)"
     if rz.is_bag(name, bc):
         return u"пакет"
     if bc in CUP_BCS or RE_CUP.search(nname(name)[:30]):
@@ -2365,6 +2369,10 @@ def _self_test_body(gui=False):
     # если на ЮА та же сигарета под другим ШК и названием латиницей - в файл для ЮА пишется ШК ЮА
     CG_OUT, CG_IN, SKU2 = _ean("482000053518"), _ean("482000053516"), _ean("482000099991")
     K_OUT, K_IN = _ean("298467006001"), _ean("298467006002")      # кулинария: вне матрицы / в матрице, на ЮА не было
+    for bc_ in ("4820189941194", "2938080055437", "04820189941194"):    # тех. товары вручную (SKIP_BC_EXTRA), и с ведущим нулём
+        ck(excl_reason(bc_, bc_key(bc_), u"Союз Майонез МакМай 600г Провансаль д/п",
+                       types.SimpleNamespace(coffee_keys=set(), coffee_names=set())).startswith(u"тех. товар"),
+           "тех. товар %s не исключён" % bc_)
     BAG_IN, CUP_IN = "2978950015505", "2978950015550"          # пакет и стакан В МАТРИЦЕ, на ЮА не было: расходники не вывозим
     ua_cg = pd.DataFrame([("48211260", "Сигарети Sobranie Gold", "склад ЮА", "48211260"),
                           ("48211253", "Сигарети Sobranie Blue", "склад ЮА", "48211253"),
