@@ -2739,6 +2739,7 @@ def _self_test_body(gui=False):
     finally:
         shutil.rmtree(tp_, ignore_errors=True)
     _selftest_split_update(ck)
+    _selftest_split_guard(ck)
     _selftest_kegs(ck)
     _selftest_split_min(ck)
     _selftest_manual_rules(ck)
@@ -2984,6 +2985,43 @@ def _write_vyvoz_list_xlsx(path, shop, day_str, rows):
     ws.cell(row=r + 1, column=7, value=99999.99)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     wb.save(path)
+
+
+def _selftest_split_guard(ck):
+    """Распределение: магазин-источник не получает свой товар, даже если его нет в списке магазинов ЮА;
+    нет ни одной точки-получателя - понятная ошибка, а не падение программы."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_guard_")
+    g = globals()
+    saved = (g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"])
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        shop = u"Тест Источник"
+        B1, B2 = _ean("482100400011"), _ean("482100400012")
+        corr = os.path.join(tmp, CORR_DIR, u"Тест_Источник.xlsx")
+        _write_vyvoz_list_xlsx(corr, shop, u"08.10.2026", [(B1, u"Прямой товар 1", 12, u"шт", 5.0, u"Пост"),
+                                                           (B2, u"Прямой товар 2", 9, u"шт", 7.0, u"Пост")])
+        g["fetch_route_history"] = lambda bcs, sh: {bc_key(b): {"shop_rc": "", "shop_dir": "2026-09-01", "net_rc": "", "net_dir": "",
+                                                                "sup": "Пост"} for b in bcs}
+        g["fetch_bc_sales"] = lambda bcs, stores, days=SPLIT_DAYS_BC: {}
+        g["pick_top_shops"] = lambda ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP: pd.DataFrame(
+            {"store": [shop, u"Точка А", u"Точка Б"], "rev": [900.0, 300.0, 200.0]}).head(n)
+        ref0 = make_ref(pd.DataFrame(columns=["barcode", "product_name", "status", "supplier"]))
+        info = run_split(d, corr, ref=ref0, top_n=2)
+        addrs = set(info.get("alloc", pd.DataFrame(columns=["addr"]))["addr"])
+        ck(info.get("ok") and shop not in addrs and addrs == {u"Точка А", u"Точка Б"},
+           "распределение: источник не получает свой товар: %s %s" % (sorted(addrs), info.get("problems")))
+        ck(any(u"источник вывоза" in n_ for n_ in info.get("notes", [])), "распределение: пометка, что источник убран из получателей")
+        g["pick_top_shops"] = lambda ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP: pd.DataFrame(columns=["store", "rev"])
+        try:
+            info0 = run_split(d, corr, ref=ref0, top_n=2)
+            ck(not info0.get("ok") and any(u"Нет ни одной точки" in p_ for p_ in info0.get("problems", [])),
+               "распределение без точек: понятная ошибка: %s" % info0.get("problems"))
+        except Exception as e_:
+            ck(False, "распределение без точек упало: %s: %s" % (type(e_).__name__, e_))
+    finally:
+        g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"] = saved
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _selftest_manual_rules(ck):
@@ -4052,6 +4090,11 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         top_n = SPLIT_TOP_N if auto_points else _clamp_top(top_n)       # auto_points: берём 10 сильнейших, нужное число отрежем ниже
         info["top_n"] = top_n
         alive = pick_top_shops(ua_stores, n=10 ** 6)                    # все живые точки не на ЮА: по ним ищем, где продаются кеги
+        me_ = _skey(shop)                                               # магазин-источник свой же товар не получает никогда
+        if any(_skey(s_) == me_ for s_ in alive["store"]):
+            alive = alive[[_skey(s_) != me_ for s_ in alive["store"]]].reset_index(drop=True)
+            info["notes"] = list(info.get("notes") or []) + [
+                u"%s (источник вывоза) убран из точек-получателей: его нет в Справочник\\%s" % (shop, UA_STORES_FILE)]
         top = alive.head(top_n).reset_index(drop=True)
         if len(top) < top_n and not auto_points:
             info["problems"].append(u"Нашлось только %d точек-получателей из %d" % (len(top), top_n))
@@ -4085,6 +4128,12 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
                    u"кег: этот ШК нигде не продавался за %d дн. - делю по обороту точек, проверьте" % SPLIT_DAYS_BC)
         routes.append((kind, why, sup or u"(поставщик не определён)"))
     lst["kind"], lst["why"], lst["sup"] = [x[0] for x in routes], [x[1] for x in routes], [x[2] for x in routes]
+    if not shops and (lst["kind"] == KIND_SHOPS).any():
+        info["problems"].append(u"Нет ни одной точки-получателя (живые точки не на ЮА за последние %d дн. продаж не найдены: "
+                                u"проверьте, обновлялся ли оборот в BigQuery), а позиций на точки %d"
+                                % (SPLIT_ALIVE_DAYS, int((lst["kind"] == KIND_SHOPS).sum())))
+        info["routes"] = lst
+        return info
     if auto_points:                                       # число точек по сумме прямых поставок: per_shop[0]..per_shop[1] грн на точку
         direct_sum = float(lst.loc[lst["kind"] == KIND_SHOPS, "sum"].sum())
         n_auto = min(auto_top_n(direct_sum, per_shop[0], per_shop[1], SPLIT_TOP_N), max(1, len(shops)))
