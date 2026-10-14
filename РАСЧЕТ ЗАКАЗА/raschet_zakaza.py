@@ -3344,56 +3344,73 @@ def run_app():
     root = ttk.Frame(app, padding=(22, 18, 22, 0))
     root.pack(fill="both", expand=True)
     ttk.Label(root, text=u"Расчёт заказа перемещений", font=H1).pack(anchor="w")
-    ttk.Label(root, text=u"Сколько товара везти с РЦ в магазины",
-              style="Mut.TLabel").pack(anchor="w", pady=(2, 0))
+    ttk.Label(root, text=u"Считает, сколько товара везти с РЦ в магазины, и готовит "
+                         u"файлы для ТСД. Пройдите шаги 1-3 сверху вниз и нажмите "
+                         u"«Рассчитать заказ». В Торгсофт программа ничего не пишет: "
+                         u"результат ложится в папку ЗАКАЗЫ.",
+              style="Mut.TLabel", wraplength=640, justify="left"
+              ).pack(anchor="w", pady=(2, 0))
 
     setup = ttk.Frame(root)
     work  = ttk.Frame(root)
-    setup.pack(fill="both", expand=True, pady=(16, 0))
+    setup.pack(fill="both", expand=True, pady=(12, 0))
 
     def card(parent):
-        c = ttk.Frame(parent, style="Card.TFrame", padding=16)
-        c.pack(fill="x", pady=(0, 12))
+        c = ttk.Frame(parent, style="Card.TFrame", padding=(16, 12))
+        c.pack(fill="x", pady=(0, 10))
         return c
 
-    # ---------------- откуда берём данные ----------------
+    def hint(parent, text, **kw):
+        lb = ttk.Label(parent, text=text, style="Mut.TLabel", wraplength=600,
+                       justify="left")
+        lb.pack(anchor="w", **kw)
+        return lb
+
+    # ---------------- шаг 1: ведомость ----------------
     c1 = card(setup)
     top1 = ttk.Frame(c1)
     top1.pack(fill="x")
-    ttk.Label(top1, text=u"Откуда берём данные", style="H2.TLabel").pack(side="left")
-    ttk.Button(top1, text=u"Выбрать файл",
+    ttk.Label(top1, text=u"Шаг 1. Оборотная ведомость из Торгсофта",
+              style="H2.TLabel").pack(side="left")
+    ttk.Button(top1, text=u"Выбрать ведомость…",
                command=lambda: choose()).pack(side="right")
+    hint(c1, u"Выгрузите оборотную ведомость по магазинам и положите в папку "
+             u"ВХОД: файл подставится сам. Другой файл - кнопка справа.",
+         pady=(4, 0))
     fname = ttk.Label(c1, text="", style="Big.TLabel")
-    fname.pack(anchor="w", pady=(10, 0))
+    fname.pack(anchor="w", pady=(8, 0))
     fdir = ttk.Label(c1, text="", style="Mut.TLabel")
     fdir.pack(anchor="w")
     fstamp = ttk.Label(c1, text="", style="Mut.TLabel")
-    fstamp.pack(anchor="w", pady=(8, 0))
-    fprev = ttk.Label(c1, text="", style="Red.TLabel", wraplength=560,
+    fstamp.pack(anchor="w", pady=(6, 0))
+    fprev = ttk.Label(c1, text="", style="Red.TLabel", wraplength=600,
                       justify="left")
     fprev.pack(anchor="w")
 
-    # ---------------- на какой день везём ----------------
+    # ---------------- шаг 2: дата ----------------
     c2 = card(setup)
-    ttk.Label(c2, text=u"На какой день везём", style="H2.TLabel").pack(anchor="w")
+    ttk.Label(c2, text=u"Шаг 2. Проверьте дату отгрузки",
+              style="H2.TLabel").pack(anchor="w")
+    hint(c2, u"Дата взята из имени файла. По ней называется папка с результатом "
+             u"и проверяется, тот ли это куст. На количество в заказе не влияет.",
+         pady=(4, 0))
     drow = ttk.Frame(c2)
-    drow.pack(anchor="w", pady=(10, 0))
+    drow.pack(anchor="w", pady=(8, 0))
     dv = tk.StringVar()
     ttk.Entry(drow, textvariable=dv, width=12, justify="center",
               font=("Segoe UI Semibold", 13)).pack(side="left", ipady=4)
     dorig = ttk.Label(drow, text="", style="Mut.TLabel")
     dorig.pack(side="left", padx=10)
-    route_l = ttk.Label(c2, text="", style="Mut.TLabel", wraplength=560,
+    route_l = ttk.Label(c2, text="", style="Mut.TLabel", wraplength=600,
                         justify="left")
     route_l.pack(anchor="w", pady=(8, 0))
-    warn_l = ttk.Label(c2, text="", style="Amb.TLabel", wraplength=560,
+    warn_l = ttk.Label(c2, text="", style="Amb.TLabel", wraplength=600,
                        justify="left")
     warn_l.pack(anchor="w")
 
-    # ---------------- что сделать после ----------------
-    # ---------------- режим расчёта ----------------
+    # ---------------- шаг 3: режим расчёта ----------------
     mode = card(setup)
-    ttk.Label(mode, text=u"Что считаем", style="H2.TLabel").pack(anchor="w")
+    ttk.Label(mode, text=u"Шаг 3. Что считаем", style="H2.TLabel").pack(anchor="w")
     mode_v, distv = tk.IntVar(value=0), tk.StringVar()
 
     def dist_pick():
@@ -3415,18 +3432,28 @@ def run_app():
             distv.set(os.path.abspath(d))
         mode_sync()
 
+    def fit():
+        """Высота окна по содержимому, но не выше экрана."""
+        if not app.winfo_viewable():
+            return
+        app.update_idletasks()
+        h = min(app.winfo_reqheight(), app.winfo_screenheight() - 60)
+        app.geometry("%dx%d" % (app.winfo_width(), max(h, 560)))
+
     def mode_sync():
         if not mode_v.get():
-            dlbl.config(text=u"получатели и куст определяются по ведомости",
-                        style="Mut.TLabel")
+            dlbl.config(text=u"", style="Mut.TLabel")
             dbtn.pack_forget()
+            refresh()
+            fit()
             return
         dbtn.pack(anchor="w", padx=(24, 0), pady=(6, 0))
+        fit()
         p = distv.get()
         if not p:
-            dlbl.config(text=u"укажите, что раздаём: файл Вывоз_<дата>.xlsx, "
-                             u"папку ВЫВОЗ_<дата> или список ШК;количество",
-                        style="Mut.TLabel")
+            dlbl.config(text=u"Список не выбран. Нажмите одну из кнопок ниже.",
+                        style="Amb.TLabel")
+            refresh()
             return
         dlbl.config(text=u"%s · %d позиций · %s исключена из получателей\n"
                          u"результат ляжет в ЗАКАЗЫ\\<дата>%s, "
@@ -3434,39 +3461,54 @@ def run_app():
                          % (os.path.basename(p.rstrip("\\/")), dist_count(p),
                             DIST_SOURCE_SHOP, DIST_DIR_SUFFIX),
                     style="Grn.TLabel")
+        refresh()
 
     ttk.Radiobutton(mode, variable=mode_v, value=0, command=mode_sync,
-                    text=u"Обычный заказ · РЦ → магазины"
-                    ).pack(anchor="w", pady=(10, 2))
+                    text=u"Обычный заказ: РЦ → магазины"
+                    ).pack(anchor="w", pady=(8, 0))
+    hint(mode, u"Каждый день. Потребность каждого магазина по ведомости, "
+               u"магазины и куст определяются по файлу.", padx=(24, 0))
     ttk.Radiobutton(mode, variable=mode_v, value=1, command=mode_sync,
                     text=u"Раздача с Полевой по списку"
-                    ).pack(anchor="w", pady=(0, 2))
+                    ).pack(anchor="w", pady=(8, 0))
+    hint(mode, u"Когда с %s нужно раздать по магазинам конкретный товар. "
+               u"Укажите список: файл Вывоз_ДД.ММ.ГГГГ.xlsx, папку ВЫВОЗ_<дата> "
+               u"или txt/csv «штрих-код;количество»." % DIST_SOURCE_SHOP,
+         padx=(24, 0))
     dlbl = ttk.Label(mode, text=u"", style="Mut.TLabel", justify="left",
-                     wraplength=560)
+                     wraplength=576)
     dlbl.pack(anchor="w", padx=(24, 0))
     dbtn = ttk.Frame(mode)
-    ttk.Button(dbtn, text=u"Файл вывоза / список", padding=(10, 4),
+    ttk.Button(dbtn, text=u"Выбрать файл со списком…", padding=(10, 4),
                command=lambda: dist_pick()).pack(side="left")
-    ttk.Button(dbtn, text=u"Папка ВЫВОЗ", padding=(10, 4),
+    ttk.Button(dbtn, text=u"Выбрать папку ВЫВОЗ…", padding=(10, 4),
                command=lambda: dist_pick_dir()).pack(side="left", padx=(8, 0))
-    mode_sync()
 
     opt = ttk.Frame(setup)
     opt.pack(fill="x", pady=(2, 0))
     clean_v, arch_v = tk.IntVar(value=1), tk.IntVar(value=1)
     ttk.Checkbutton(opt, variable=clean_v,
-                    text=u"прежний расчёт за этот день убрать в папку замен"
-                    ).pack(anchor="w", pady=2)
+                    text=u"Прежний расчёт за этот день убрать в ЗАКАЗЫ\\_замененные"
+                    ).pack(anchor="w")
+    hint(opt, u"чтобы в папке дня не остался старый txt магазина. "
+              u"Ничего не удаляется, вернуть можно.", padx=(24, 0), pady=(0, 4))
     ttk.Checkbutton(opt, variable=arch_v,
-                    text=u"ведомость после расчёта убрать в АРХИВ"
-                    ).pack(anchor="w", pady=2)
+                    text=u"После расчёта перенести ведомость в АРХИВ"
+                    ).pack(anchor="w")
+    hint(opt, u"чтобы в следующий раз в ВХОД не подставился старый файл.",
+         padx=(24, 0))
 
-    foot = ttk.Frame(root, padding=(0, 16, 0, 18))
-    foot.pack(fill="x", side="bottom")
+    # кнопки пакуются раньше шагов: если окно ниже содержимого,
+    # обрезается текст шагов, а не «Рассчитать заказ»
+    foot = ttk.Frame(root, padding=(0, 12, 0, 16))
+    foot.pack(fill="x", side="bottom", before=setup)
     go_b = ttk.Button(foot, text=u"Рассчитать заказ", style=ACC, padding=(18, 8))
     go_b.pack(side="right")
     ttk.Button(foot, text=u"Закрыть", command=app.destroy,
                padding=(14, 8)).pack(side="right", padx=(0, 10))
+    why_l = ttk.Label(foot, text=u"", style="Amb.TLabel", wraplength=330,
+                      justify="left")
+    why_l.pack(side="left")
 
     srcv = tk.StringVar()
     origin = [""]
@@ -3488,7 +3530,12 @@ def run_app():
 
     def refresh(*_a):
         d = parse_dv()
-        go_b.state(["!disabled"] if (srcv.get() and d) else ["disabled"])
+        why = (u"Выберите ведомость (шаг 1)" if not srcv.get() else
+               u"Исправьте дату (шаг 2)" if d is None else
+               u"Выберите список для раздачи (шаг 3)"
+               if mode_v.get() and not distv.get() else u"")
+        go_b.state(["disabled"] if why else ["!disabled"])
+        why_l.config(text=why)
         if d is None:
             route_l.config(text=u"")
             warn_l.config(text=u"Дата не понята. Нужен вид 07.09.2026",
@@ -3520,7 +3567,9 @@ def run_app():
         if not path:
             fname.config(text=u"файл не выбран")
             fdir.config(text=u"")
-            fstamp.config(text=u"Нажмите «Выбрать файл»", style="Mut.TLabel")
+            fstamp.config(text=u"В папке ВХОД ведомости нет. "
+                               u"Нажмите «Выбрать ведомость…»",
+                          style="Amb.TLabel")
             fprev.config(text=u"")
             dv.set("")
             refresh()
@@ -3602,7 +3651,7 @@ def run_app():
     def start():
         global GUI_CHOICE, DIST_FILE
         d = parse_dv()
-        if running[0] or not srcv.get() or d is None:
+        if running[0] or "disabled" in go_b.state():
             return
         running[0] = True
         DIST_FILE = distv.get() if mode_v.get() else ""
@@ -3671,17 +3720,25 @@ def run_app():
                              u"Предупреждений %d, ошибок нет\n%s"
                              % (i["shops"], i["shops_all"], i["positions"],
                                 i["units"], nw, i["day_dir"]) + i.get("dist_txt", u""))
+            nxt = (u"Что дальше: 1) «Открыть отчёт проверки» - просмотрите жёлтые строки "
+                   u"(предупреждения); 2) «Открыть папку с заказами» - в папке "
+                   u"каждого магазина xlsx для печати и txt для ТСД.")
         else:
             wcap.config(text=u"Файлы не записаны", foreground=RED)
             wsub.config(text=u"Ошибок %d, предупреждений %d. Что именно не так — "
                              u"в списке выше и в отчёте." % (ne, nw))
+            nxt = (u"Что дальше: красные строки в списке выше - причина. "
+                   u"Тот же отчёт лежит в папке ЛОГИ (ВАЛИДАЦИЯ_СБОЙ_…xlsx). "
+                   u"Исправьте файл и запустите программу ещё раз.")
+        ttk.Label(work, text=nxt, style="Mut.TLabel", wraplength=640,
+                  justify="left").pack(anchor="w", pady=(8, 0))
         f2 = ttk.Frame(root, padding=(0, 12, 0, 18))
         f2.pack(fill="x", side="bottom")
         if i:
             ttk.Button(f2, text=u"Открыть папку с заказами", style=ACC,
                        padding=(18, 8),
                        command=lambda: open_path(i["day_dir"])).pack(side="right")
-            ttk.Button(f2, text=u"Отчёт проверки", padding=(14, 8),
+            ttk.Button(f2, text=u"Открыть отчёт проверки", padding=(14, 8),
                        command=lambda: open_path(i["validation"])).pack(
                            side="right", padx=(0, 10))
         else:
@@ -3694,9 +3751,11 @@ def run_app():
     go_b.config(command=start)
     app.bind("<Return>", lambda e: start())
     ensure_dirs()
+    mode_sync()
     load(find_source_file(quiet=True))
     app.update_idletasks()
-    w_, h_ = 720, max(600, app.winfo_reqheight())
+    w_ = 720
+    h_ = min(max(600, app.winfo_reqheight()), app.winfo_screenheight() - 60)
     sw, sh = app.winfo_screenwidth(), app.winfo_screenheight()
     app.geometry("%dx%d+%d+%d" % (w_, h_, max(0, (sw - w_) // 2),
                                   max(0, (sh - h_) // 3)))
