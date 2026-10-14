@@ -1641,23 +1641,56 @@ def verify_vyvoz(shop_dir, fname, rows):
     return problems
 
 
-def prepare_day_dir(dirs, day, tag=u""):
-    """Папка результата дня. tag - метка режима (зачистка остатка лежит отдельно: ВЫВОЗ\\2026-10-08_зачистка), чтобы
-    повторный запуск обычного вывоза за ту же дату не уносил её в _замененные."""
+def _file_busy(path):
+    """Файл открыт в Excel (есть ~$-копия или файл не открывается на запись)."""
+    if os.path.isfile(os.path.join(os.path.dirname(path), u"~$" + os.path.basename(path))):
+        return True
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "r+b"):
+            pass
+    except OSError:
+        return True
+    return False
+
+
+def shop_folders(shops):
+    """Имена папок магазинов в папке дня: safe_name, совпадения без учёта регистра - с « (2)», « (3)»."""
+    out, used = {}, set()
+    for shop in shops:
+        base = rz.safe_name(shop)
+        nm, k = base, 2
+        while nm.lower() in used:
+            nm, k = "%s (%d)" % (base, k), k + 1
+        used.add(nm.lower())
+        out[shop] = nm
+    return out
+
+
+def prepare_day_dir(dirs, day, tag=u"", folders=()):
+    """Папка результата дня. tag - метка режима (зачистка остатка лежит отдельно: ВЫВОЗ\\2026-10-08_зачистка).
+    Повторный запуск за ту же дату уносит в _замененные только папки пересчитываемых магазинов (folders) и прошлую сводку;
+    папки других магазинов этой даты (их списки, ТСД_по_адресам, Обновление_*, Инвентаризация_ЮА_*) остаются на месте."""
     d = os.path.join(dirs.out, day.strftime("%Y-%m-%d") + tag)
-    busy = rz.locked_files(d)
+    targets = [os.path.join(d, f_) for f_ in folders if os.path.isdir(os.path.join(d, f_))]
+    summary = os.path.join(d, SUMMARY_NAME)
+    busy = [b for t_ in targets for b in rz.locked_files(t_)] + ([summary] if _file_busy(summary) else [])
     if busy:
         R.check("ERROR", u"Файлы прошлого вывоза заняты",
                 u"закройте в Excel и запустите снова: %s" % "; ".join(os.path.basename(b) for b in busy[:5]))
         return None
-    if os.path.isdir(d) and os.listdir(d):
+    if os.path.isfile(summary):
+        targets.append(summary)
+    if targets:
         dst0 = os.path.join(dirs.out, REPLACED_DIR, "%s_%s" % (os.path.basename(d), datetime.now().strftime("%H-%M-%S")))
         dst, n = dst0, 2
         while os.path.exists(dst):                    # два запуска в одну секунду: новая папка с суффиксом, а не «внутрь» первой
             dst, n = "%s_%d" % (dst0, n), n + 1
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.move(d, dst)
-        R.check("INFO", u"Прошлый результат этой даты", u"убран в %s" % dst)
+        os.makedirs(dst, exist_ok=True)
+        for t_ in targets:
+            shutil.move(t_, os.path.join(dst, os.path.basename(t_)))
+        R.check("INFO", u"Прошлый результат этой даты", u"убран в %s: %s" % (dst, u"; ".join(os.path.basename(t_) for t_ in targets)))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -1746,7 +1779,8 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
         ud = guess_day(_pick_latest(list_xlsx(dirs.ua_wh)))[0]
         if abs((ud - day).days) > 1:
             R.check("WARN", u"Разные даты выгрузок", u"склад ЮА от %s, магазины от %s" % (ud.strftime("%d.%m.%Y"), day.strftime("%d.%m.%Y")))
-    day_dir = prepare_day_dir(dirs, day, SWEEP_DAY_TAG if sweep else u"")
+    folders = shop_folders(sel)
+    day_dir = prepare_day_dir(dirs, day, SWEEP_DAY_TAG if sweep else u"", folders.values())
     if day_dir is None:
         _fail_report(dirs, day)
         info["errors"] = len(R.errors)
@@ -1773,7 +1807,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
                 u"вывозится всё, независимо от матрицы и ЮА; остаются только заморозка, скоропорты, расходники и сырьё кофеаппарата "
                 u"(правила: %s; поставщиков %d, фрагментов названий %d). Результат лежит отдельно: %s"
                 % (SWEEP_STAY_FILE, len(sweep_rules["sup"]), len(sweep_rules["name"]), os.path.basename(day_dir)))
-    entries, used, results, diag = [], {}, [], []
+    entries, results, diag = [], [], []
     for shop in sel:
         path, df = stores[shop]
         agg, pinfo = prepare_stock(df)
@@ -1821,11 +1855,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
             R.check("WARN", u"%s: нет себестоимости" % shop, u"у %d позиций вывоза, сумма считается без них" % int(v["no_cost"].sum()))
         if (v["unit"] == "").any():
             R.check("INFO", u"%s: пустая единица измерения" % shop, u"у %d позиций вывоза" % int((v["unit"] == "").sum()))
-        base = rz.safe_name(shop)
-        nm, k = base, 2
-        while nm.lower() in used:
-            nm, k = "%s (%d)" % (base, k), k + 1
-        used[nm.lower()] = shop
+        nm = folders[shop]
         shop_dir = os.path.join(day_dir, nm)
         os.makedirs(shop_dir, exist_ok=True)
         write_store_book(os.path.join(shop_dir, nm + ".xlsx"), shop, day, res, st,
@@ -2585,9 +2615,17 @@ def _self_test_body(gui=False):
            and all(ws_m.cell(row=2, column=j).alignment.horizontal == "center" for j in range(2, 18)),
            "сводка «По магазинам»: заголовки и числа по центру")
         sbook.close()
-        # перезапуск той же даты: старый результат уходит в _замененные, а не затирается
+        # перезапуск той же даты: старый результат уходит в _замененные, а не затирается;
+        # папка другого магазина этой даты (его распределение) остаётся на месте
+        other_ = os.path.join(out["day_dir"], u"Другой магазин", SPLIT_OUT_DIR)
+        os.makedirs(other_)
+        open(os.path.join(other_, u"Точка.txt"), "w").close()
         out2 = run_vyvoz(d, ref=ref2)
-        ck(os.path.isdir(os.path.join(d.out, REPLACED_DIR)), "повторный запуск: _замененные")
+        rep_ = os.path.join(d.out, REPLACED_DIR)
+        moved_ = [f_ for _r, _ds, fs_ in os.walk(rep_) for f_ in _ds + fs_]
+        ck(os.path.isdir(rep_) and u"Тест 1" in moved_ and SUMMARY_NAME in moved_, "повторный запуск: _замененные: %s" % moved_)
+        ck(os.path.isfile(os.path.join(other_, u"Точка.txt")) and u"Другой магазин" not in moved_,
+           "повторный запуск не уносит папку другого магазина той же даты: %s" % moved_)
         # с настройкой «убирать и то, что на ЮА не завозилось»: B_NOUA уходит в вывоз, а не ждёт решения
         out3 = run_vyvoz(d, ref=ref2, remove_not_on_ua=True)
         with open(os.path.join(out3["day_dir"], "Тест 1", "Тест 1.txt"), "rb") as f:
