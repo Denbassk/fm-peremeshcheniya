@@ -75,6 +75,7 @@ RECODE_TABLE   = BQ_DATASET + ".barcode_recode_map"
 INCOMING_TABLE = BQ_DATASET + ".incoming_transactions"
 COFFEE_SUPPLIER_LIKE = u"%каваапарат%"     # поставщик сырья кофеаппарата (СТВ Дистрибюшн)
 HIST_DAYS = 120                             # окно истории поставок для списка «В матрице, на ЮА не было»
+SUP_DAYS = 180                              # окно поиска последнего поставщика для товара вне матрицы (решение 14.10.2026)
 
 CACHE_TTL_H         = 1      # кэш свежее этого - в BigQuery не ходим
 CACHE_WARN_H        = 24     # работа по кэшу старше суток -> предупреждение
@@ -771,23 +772,22 @@ def load_reference(dirs):
                     % (INCOMING_TABLE, COFFEE_SUPPLIER_LIKE), u"Сырьё кофеаппарата", None, False)
     if cof is None:
         R.check("WARN", u"Сырьё кофеаппарата", u"правило не применено: сырьё может попасть в вывоз")
-    hist = bq_cached(dirs, "hist",
-                     u"SELECT LTRIM(barcode,'0') AS barcode, STRING_AGG(DISTINCT delivery_type ORDER BY delivery_type) AS types, "
-                     u"CAST(MAX(doc_date) AS STRING) AS last_date, "
-                     u"ARRAY_AGG(supplier ORDER BY doc_date DESC LIMIT 1)[OFFSET(0)] AS last_supplier FROM `%s` "
-                     u"WHERE doc_date >= DATE_SUB(CURRENT_DATE(), INTERVAL %d DAY) AND quantity > 0 GROUP BY 1"
-                     % (INCOMING_TABLE, HIST_DAYS), u"История поставок", None, False)
+    # типы поставок и дата последнего прихода - за HIST_DAYS (колонка «Поставки за 120 дн.»), последний поставщик - за SUP_DAYS:
+    # сезонный товар исключённого поставщика (мороженое зимой) без прихода 4 месяца иначе оставался без поставщика и уезжал
+    sql_h = (u"SELECT LTRIM(barcode,'0') AS barcode, STRING_AGG(DISTINCT t ORDER BY t) AS types, "
+             u"CAST(MAX(IF(recent, doc_date, NULL)) AS STRING) AS last_date, "
+             u"ARRAY_AGG(supplier ORDER BY doc_date DESC LIMIT 1)[OFFSET(0)] AS last_supplier FROM ("
+             u"SELECT barcode, doc_date, supplier, doc_date >= DATE_SUB(CURRENT_DATE(), INTERVAL %d DAY) AS recent, "
+             u"IF(doc_date >= DATE_SUB(CURRENT_DATE(), INTERVAL %d DAY), delivery_type, NULL) AS t FROM `%s` "
+             u"WHERE doc_date >= DATE_SUB(CURRENT_DATE(), INTERVAL %d DAY) AND quantity > 0) GROUP BY 1"
+             % (HIST_DAYS, HIST_DAYS, INCOMING_TABLE, max(SUP_DAYS, HIST_DAYS)))
+    hist = bq_cached(dirs, "hist", sql_h, u"История поставок", None, False)
     if hist is not None and "last_supplier" not in hist.columns:      # кэш старого формата: взять заново
         try:
             os.remove(os.path.join(dirs.cache, "vyvoz_hist.csv"))
         except OSError:
             pass
-        hist = bq_cached(dirs, "hist",
-                         u"SELECT LTRIM(barcode,'0') AS barcode, STRING_AGG(DISTINCT delivery_type ORDER BY delivery_type) AS types, "
-                         u"CAST(MAX(doc_date) AS STRING) AS last_date, "
-                         u"ARRAY_AGG(supplier ORDER BY doc_date DESC LIMIT 1)[OFFSET(0)] AS last_supplier FROM `%s` "
-                         u"WHERE doc_date >= DATE_SUB(CURRENT_DATE(), INTERVAL %d DAY) AND quantity > 0 GROUP BY 1"
-                         % (INCOMING_TABLE, HIST_DAYS), u"История поставок", None, False)
+        hist = bq_cached(dirs, "hist", sql_h, u"История поставок", None, False)
     return {"matrix": m, "recode": rec, "coffee": cof, "hist": hist}
 
 
@@ -843,7 +843,8 @@ def make_ref(matrix_df, recode_df=None, coffee_df=None, ua_df=None, hist_df=None
         lsup = hist_df["last_supplier"] if "last_supplier" in hist_df.columns else [u""] * len(hist_df)
         for bc, types, last, sup in zip(hist_df["barcode"], hist_df["types"], hist_df["last_date"], lsup):
             if bc_key(bc):
-                r.hist[bc_key(bc)] = (str(types), str(last))
+                if str(types).strip() or str(last).strip():      # приходы только старше HIST_DAYS: «нет приходов за 120 дн.»
+                    r.hist[bc_key(bc)] = (str(types), str(last))
                 if str(sup).strip() and str(sup).lower() not in ("nan", "none"):
                     r.last_sup[bc_key(bc)] = str(sup).strip()
     r.ua_cig = []                                 # сигареты ЮА: каркасы названий для сопоставления с кириллицей Family
@@ -2784,6 +2785,15 @@ def _self_test_body(gui=False):
         ck(_pick_latest([fa_, fb_]) == fb_, "свежей выгрузкой выбирается 8.10, а не 06.10: %s" % _pick_latest([fa_, fb_]))
     finally:
         shutil.rmtree(tp_, ignore_errors=True)
+    # поставщик найден за SUP_DAYS, а приходов за HIST_DAYS нет: исключение поставщика работает, «нет приходов за 120 дн.»
+    ICE = _ean("482000077001")
+    ref_h = make_ref(matrix, recode, coffee, ua, pd.DataFrame([(ICE, "", "", "Хладопром")], columns=["barcode", "types", "last_date", "last_supplier"]))
+    agg_h = pd.DataFrame({"shop": ["Тест 1"] * 2, "bc": [ICE, B_NOUA], "key": [bc_key(ICE), bc_key(B_NOUA)],
+                          "name": ["Морозиво Тест", "Вода Тест 1,5л"], "unit": ["шт", "шт"], "cost": [10.0, 11.0], "qty": [3.0, 5.0]})
+    res_h = classify_stock(agg_h, ref_h, excl_suppliers={sup_norm("Хладопром")})
+    ck(res_h.loc[0, "verdict"] == "EXCL" and res_h.loc[0, "supplier"] == "Хладопром" and bc_key(ICE) not in ref_h.hist
+       and res_h.loc[1, "hist"].startswith("нет приходов"),
+       "поставщик за 180 дн. без приходов за 120 дн.: %s" % res_h[["verdict", "supplier", "hist"]].to_dict("records"))
     _selftest_split_update(ck)
     _selftest_split_guard(ck)
     _selftest_bad_bc(ck)
