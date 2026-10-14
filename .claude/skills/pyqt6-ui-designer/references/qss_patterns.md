@@ -117,8 +117,7 @@ QPushButton[class="primary"]:hover {{
     background-color: {COLOR_PRIMARY_CONTAINER};
 }}
 QPushButton[class="primary"]:pressed {{
-    background-color: {COLOR_PRIMARY};
-    opacity: 0.85;
+    background-color: {COLOR_PRIMARY_PRESSED};
 }}
 QPushButton[class="primary"]:disabled {{
     background-color: {COLOR_OUTLINE_VARIANT};
@@ -152,12 +151,12 @@ QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     border-radius: {RADIUS_SM}px;
     padding: {SPACING_SM}px {SPACING_MD}px;
     color: {COLOR_ON_SURFACE};
-    selection-background-color: {COLOR_PRIMARY_FIXED};
-    selection-color: {COLOR_PRIMARY};
+    selection-background-color: {COLOR_SELECTION_BG};
+    selection-color: {COLOR_SELECTION_TEXT};
 }}
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
 QSpinBox:focus, QDoubleSpinBox:focus {{
-    border: 2px solid {COLOR_PRIMARY};
+    border: 2px solid {COLOR_FOCUS};
     padding: {SPACING_SM - 1}px {SPACING_MD - 1}px;
 }}
 QLineEdit:disabled, QTextEdit:disabled {{
@@ -182,8 +181,8 @@ QComboBox QAbstractItemView {{
     border: 1px solid {COLOR_OUTLINE_VARIANT};
     border-radius: {RADIUS_LG}px;
     padding: {SPACING_XS}px;
-    selection-background-color: {COLOR_PRIMARY_FIXED};
-    selection-color: {COLOR_PRIMARY};
+    selection-background-color: {COLOR_SELECTION_BG};
+    selection-color: {COLOR_SELECTION_TEXT};
     outline: none;
 }}
 QComboBox QAbstractItemView::item {{
@@ -239,7 +238,7 @@ QTableWidget, QTableView {{
     border-radius: {RADIUS_LG}px;
     gridline-color: {COLOR_OUTLINE_VARIANT};
     alternate-background-color: {COLOR_SURFACE_LOW};
-    selection-background-color: {COLOR_PRIMARY_FIXED};
+    selection-background-color: {COLOR_SELECTION_BG};
     selection-color: {COLOR_ON_SURFACE};
     outline: none;
     font-size: {TYPO_BODY_SM[0]}px;
@@ -250,8 +249,8 @@ QTableWidget::item, QTableView::item {{
     border-bottom: 1px solid {COLOR_OUTLINE_VARIANT};
 }}
 QTableWidget::item:selected, QTableView::item:selected {{
-    background-color: {COLOR_PRIMARY_FIXED};
-    color: {COLOR_ON_SURFACE};
+    background-color: {COLOR_SELECTION_BG};
+    color: {COLOR_SELECTION_TEXT};
 }}
 QHeaderView {{
     background-color: {COLOR_SURFACE_LOW};
@@ -294,8 +293,8 @@ QListWidget::item:hover {{
     color: {COLOR_ON_SURFACE};
 }}
 QListWidget::item:selected {{
-    background-color: {COLOR_PRIMARY_FIXED};
-    color: {COLOR_PRIMARY};
+    background-color: {COLOR_SELECTION_BG};
+    color: {COLOR_SELECTION_TEXT};
     font-weight: 600;
 }}
 
@@ -329,7 +328,7 @@ QTabBar::tab {{
     min-width: 80px;
 }}
 QTabBar::tab:selected {{
-    color: {COLOR_PRIMARY};
+    color: {COLOR_ON_SURFACE};
     border-bottom: 2px solid {COLOR_PRIMARY};
     background: {COLOR_SURFACE_LOWEST};
 }}
@@ -351,12 +350,12 @@ QCheckBox::indicator {{
     background: {COLOR_SURFACE_LOWEST};
 }}
 QCheckBox::indicator:checked {{
-    background-color: {COLOR_PRIMARY};
-    border-color: {COLOR_PRIMARY};
+    background-color: {COLOR_CONTROL_CHECKED};
+    border-color: {COLOR_CONTROL_CHECKED};
     image: url(:/icons/check_white.svg);
 }}
 QCheckBox::indicator:hover {{
-    border-color: {COLOR_PRIMARY};
+    border-color: {COLOR_FOCUS};
 }}
 QRadioButton::indicator {{
     width: 18px; height: 18px;
@@ -365,8 +364,8 @@ QRadioButton::indicator {{
     background: {COLOR_SURFACE_LOWEST};
 }}
 QRadioButton::indicator:checked {{
-    background-color: {COLOR_PRIMARY};
-    border-color: {COLOR_PRIMARY};
+    background-color: {COLOR_CONTROL_CHECKED};
+    border-color: {COLOR_CONTROL_CHECKED};
 }}
 
 /* ─── QSlider ───────────────────────────────────── */
@@ -377,12 +376,12 @@ QSlider::groove:horizontal {{
 }}
 QSlider::handle:horizontal {{
     width: 16px; height: 16px;
-    background: {COLOR_PRIMARY};
+    background: {COLOR_CONTROL_CHECKED};
     border-radius: 8px;
     margin: -6px 0;
 }}
 QSlider::sub-page:horizontal {{
-    background: {COLOR_PRIMARY};
+    background: {COLOR_CONTROL_CHECKED};
     border-radius: 2px;
 }}
 
@@ -443,7 +442,7 @@ QProgressBar {{
     font-size: 0px;
 }}
 QProgressBar::chunk {{
-    background-color: {COLOR_PRIMARY};
+    background-color: {COLOR_CONTROL_CHECKED};
     border-radius: 2px;
 }}
 
@@ -496,15 +495,22 @@ switch them wholesale. The replacement trick above works for prototypes.
 
 ```python
 SIDEBAR_QSS = f"""
+/* Фемелі Маркет: панель тёмная в обеих темах; в тёмной теме подставить DARK_SIDEBAR_* */
 #sidebar {{
-    background-color: {COLOR_SURFACE};
-    border-right: 1px solid {COLOR_OUTLINE_VARIANT};
+    background-color: {SIDEBAR_BG};
+    border: none;
     min-width: 240px;
     max-width: 240px;
 }}
 #sidebar[collapsed="true"] {{
     min-width: 64px;
     max-width: 64px;
+}}
+#sidebarGroupLabel {{                 /* «СЕГОДНЯ», «НА СЛЕДУЮЩИЙ ДЕНЬ», «ОТДЕЛЬНО» */
+    color: {SIDEBAR_GROUP_LABEL};
+    font-size: {TYPO_LABEL_SM[0]}px;
+    font-weight: 600;
+    padding: {SPACING_MD}px {SPACING_MD}px {SPACING_XS}px {SPACING_MD + 3}px;
 }}
 #sidebarNavItem {{
     background: transparent;
@@ -513,24 +519,28 @@ SIDEBAR_QSS = f"""
     border-radius: 0;
     padding: {SPACING_SM}px {SPACING_MD}px;
     text-align: left;
-    color: {COLOR_ON_SURFACE_VARIANT};
+    color: {SIDEBAR_TEXT};
     font-size: {TYPO_BODY_MD[0]}px;
-    font-weight: 400;
+    font-weight: 500;
     min-height: 40px;
 }}
 #sidebarNavItem:hover {{
-    background-color: {COLOR_SURFACE_HIGH};
-    color: {COLOR_ON_SURFACE};
-    border-left-color: {COLOR_OUTLINE_VARIANT};
+    background-color: {SIDEBAR_HOVER};
+    color: {SIDEBAR_TEXT_ACTIVE};
+}}
+#sidebarNavItem:focus {{               /* клавиатура: Tab / стрелки */
+    outline: none;
+    border-left: 3px solid {SIDEBAR_TEXT};
+    background-color: {SIDEBAR_HOVER};
 }}
 #sidebarNavItem[active="true"] {{
-    background-color: {COLOR_PRIMARY_FIXED};
-    color: {COLOR_PRIMARY};
-    border-left: 3px solid {COLOR_PRIMARY};
+    background-color: {SIDEBAR_ACTIVE};
+    color: {SIDEBAR_TEXT_ACTIVE};
+    border-left: 3px solid {SIDEBAR_INDICATOR};   /* единственное место красного в панели */
     font-weight: 600;
 }}
 #sidebarNavItem[active="true"]:hover {{
-    background-color: {COLOR_PRIMARY_FIXED};
+    background-color: {SIDEBAR_ACTIVE};
 }}
 """
 ```
