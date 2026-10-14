@@ -2824,6 +2824,7 @@ def _self_test_body(gui=False):
        "поставщик за 180 дн. без приходов за 120 дн.: %s" % res_h[["verdict", "supplier", "hist"]].to_dict("records"))
     _selftest_split_update(ck)
     _selftest_split_guard(ck)
+    _selftest_split_one(ck)
     _selftest_bad_bc(ck)
     _selftest_ua_shops(ck)
     _selftest_kegs(ck)
@@ -3118,6 +3119,52 @@ def _selftest_ua_shops(ck):
         ck(bc_key(X1) in own and bc_key(X2) not in own and bc_key(_ean("500000000001")) in own,
            "МАГАЗИНЫ_ЮА: Грозненська 38 видит свою выгрузку (Болградська 38 ЮА, в т.ч. с нулём) и склад ЮА, чужую нет")
     finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_split_one(ck):
+    """«Весь вывоз на один магазин»: всё (товар РЦ, прямой, кег) едет на выбранный магазин; оценка продаж за EFF_DAYS дней;
+    магазин не из живых точек (или источник) - понятная ошибка."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_one_")
+    g = globals()
+    saved = (g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"])
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        shop = u"Тест Источник"
+        RC1, D1, KG = _ean("482100500011"), _ean("482100500012"), _ean("482100500013")
+        corr = os.path.join(tmp, CORR_DIR, u"Тест_один.xlsx")
+        _write_vyvoz_list_xlsx(corr, shop, u"08.10.2026", [(RC1, u"Товар РЦ", 12, u"шт", 5.0, u"Пост"),
+                                                           (D1, u"Прямой товар", 9, u"шт", 7.0, u"Пост"),
+                                                           (KG, u"БІР Кег Тест 30л", 4, u"шт", 50.0, u"БІР")])
+        g["fetch_route_history"] = lambda bcs, sh: {bc_key(b): ({"shop_rc": "2026-09-01", "shop_dir": "", "net_rc": "", "net_dir": "", "sup": "Пост"}
+                                                                if bc_key(b) == bc_key(RC1) else
+                                                                {"shop_rc": "", "shop_dir": "2026-09-01", "net_rc": "", "net_dir": "", "sup": "Пост"})
+                                                    for b in bcs}
+        g["pick_top_shops"] = lambda ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP: pd.DataFrame(
+            {"store": [u"Точка А", u"Точка Б", u"Точка В"], "rev": [300.0, 200.0, 100.0]}).head(n)
+        sl = {(bc_key(RC1), u"Точка Б"): 6.0, (bc_key(RC1), u"Точка А"): 12.0, (bc_key(D1), u"Точка А"): 9.0, (bc_key(KG), u"Точка Б"): 2.0}
+        g["fetch_bc_sales"] = lambda bcs, stores, days=SPLIT_DAYS_BC: {k_: v_ for k_, v_ in sl.items() if k_[1] in stores}
+        ref0 = make_ref(pd.DataFrame(columns=["barcode", "product_name", "status", "supplier"]))
+        info = run_split(d, corr, ref=ref0, target=u"точка б")
+        al = info.get("alloc", pd.DataFrame(columns=["addr", "bc", "qty"]))
+        ck(info.get("ok") and set(al["addr"]) == {u"Точка Б"} and abs(float(al["qty"].sum()) - 25.0) < 1e-9,
+           "всё на один магазин: и РЦ, и кег на Точку Б: %s %s" % (al.to_dict("records"), info.get("problems")))
+        e_ = info.get("eff") or {}
+        ck(abs(e_.get("share", 0) - 130.0 / 323.0) < 1e-6 and e_.get("place") == 1 and e_.get("of") == 3,
+           "оценка продаж за 60 дн.: доля %s, место %s из %s" % (e_.get("share"), e_.get("place"), e_.get("of")))
+        wb_ = load_workbook(os.path.join(info["out_dir"], u"Распределение.xlsx"), read_only=True)
+        ck(u"Оценка продаж %d дн" % EFF_DAYS in wb_.sheetnames and u"Сравнение магазинов" in wb_.sheetnames,
+           "всё на один магазин: листы оценки: %s" % wb_.sheetnames)
+        wb_.close()
+        for bad_, word_ in ((u"Точка Г", u"нет среди"), (shop, u"источник")):
+            g["pick_top_shops"] = lambda ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP: pd.DataFrame(
+                {"store": [shop, u"Точка А"], "rev": [900.0, 300.0]}).head(n)
+            i_ = run_split(d, corr, ref=ref0, target=bad_)
+            ck(not i_.get("ok") and any(word_ in p_ for p_ in i_.get("problems", [])),
+               "всё на один магазин: «%s» - понятная ошибка: %s" % (bad_, i_.get("problems")))
+    finally:
+        g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"] = saved
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -3957,6 +4004,27 @@ TRANSFER_TABLE   = BQ_DATASET + ".transfer_all_transactions"
 UA_STORES_FILE   = u"vyvoz_ua_stores.csv"
 ROUTE_SUP_FILE   = u"vyvoz_route_suppliers.csv"
 KIND_RC, KIND_SHOPS = u"РЦ", u"Точки"
+EFF_DAYS         = 60                 # оценка «продастся ли»: продажи ШК на магазине за последние N дней (решение 14.10.2026)
+
+
+def sell_estimate(lst, store, sales, days=EFF_DAYS):
+    """Оценка для «всё на один магазин»: продастся ли отправленное за days дней, если продажи будут как за прошлые days дней.
+    Остаток магазина не учитывается (актуальных данных нет, решение 14.10.2026). -> (DataFrame по позициям, итоги)"""
+    rows = []
+    for r in lst.itertuples(index=False):
+        sold = float(sales.get((bc_key(r.bc), store), 0.0))
+        q = float(r.qty)
+        cost = float(r.cost or 0.0)
+        rows.append({"bc": r.bc, "name": r.name, "qty": q, "unit": r.unit, "cost": cost, "sum": round(q * cost, 2),
+                     "sales": round(sold, 3), "in_days": min(q, sold), "in_sum": round(min(q, sold) * cost, 2),
+                     "days_to_sell": (round(q / (sold / float(days))) if sold > 0 else None)})
+    d = pd.DataFrame(rows, columns=["bc", "name", "qty", "unit", "cost", "sum", "sales", "in_days", "in_sum", "days_to_sell"])
+    tot_s, tot_q = float(d["sum"].sum()), float(d["qty"].sum())
+    by_sum = tot_s > 0
+    share = (float(d["in_sum"].sum()) / tot_s) if by_sum else ((float(d["in_days"].sum()) / tot_q) if tot_q else 0.0)
+    nos = d[d["sales"] <= 0]
+    return d, {"store": store, "share": share, "by_sum": by_sum, "sum": round(tot_s, 2), "sum_in": round(float(d["in_sum"].sum()), 2),
+               "pos": len(d), "pos_sold": int((d["sales"] > 0).sum()), "pos_no": len(nos), "sum_no": round(float(nos["sum"].sum()), 2)}
 
 
 def _clamp_top(n):
@@ -4229,8 +4297,11 @@ def keg_shares(bc, alive, rev, sales):
     return shop_shares(bc, list(alive), rev, {}), False
 
 
-def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=False, auto_points=False, per_shop=(5000.0, 7000.0)):
-    """Исправленный лист вывоза -> txt для ТСД по адресам + xlsx для проверки. -> dict(ok, out_dir, files, problems, summary)"""
+def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=False, auto_points=False, per_shop=(5000.0, 7000.0),
+              target=None):
+    """Исправленный лист вывоза -> txt для ТСД по адресам + xlsx для проверки. -> dict(ok, out_dir, files, problems, summary)
+    target - «весь вывоз на один магазин»: все позиции (и товар РЦ, и кеги) едут на этот магазин, плюс оценка продаж за
+    EFF_DAYS дней на нём и сравнение со всеми живыми точками не на ЮА."""
     reset_report()
     info = {"ok": False, "problems": [], "files": [], "summary": []}
     try:
@@ -4267,12 +4338,24 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
             alive = alive[[_skey(s_) != me_ for s_ in alive["store"]]].reset_index(drop=True)
             info["notes"] = list(info.get("notes") or []) + [
                 u"%s (источник вывоза) убран из точек-получателей: его нет в Справочник\\%s" % (shop, UA_STORES_FILE)]
-        top = alive.head(top_n).reset_index(drop=True)
+        tgt = None
+        if target:                                                      # весь вывоз на один магазин
+            tk_ = _skey(target)
+            tgt = next((s_ for s_ in alive["store"] if _skey(s_) == tk_), None)
+            if tgt is None:
+                why_ = (u"это источник вывоза" if tk_ == me_ else u"он в списке магазинов ЮА (Справочник\\%s)" % UA_STORES_FILE
+                        if tk_ in ua_stores else u"его нет среди работающих точек не на ЮА (продажи за последние %d дн.)" % SPLIT_ALIVE_DAYS)
+                sim_ = difflib.get_close_matches(target, list(alive["store"]), n=3, cutoff=0.5)
+                info["problems"].append(u"Весь вывоз на «%s» нельзя: %s.%s" % (target, why_, (u" Похожие: " + u"; ".join(sim_)) if sim_ else u""))
+                return info
+            auto_points, top_n = False, 1
+            info["top_n"] = 1
+        top = alive[alive["store"] == tgt].reset_index(drop=True) if tgt else alive.head(top_n).reset_index(drop=True)
         if len(top) < top_n and not auto_points:
             info["problems"].append(u"Нашлось только %d точек-получателей из %d" % (len(top), top_n))
         shops = list(top["store"])
         rev = dict(zip(top["store"], top["rev"]))
-        sales = fetch_bc_sales(lst["bc"], shops)
+        sales = fetch_bc_sales(lst["bc"], list(alive["store"]) if tgt else shops, days=(EFF_DAYS if tgt else SPLIT_DAYS_BC))
         rev_all = dict(zip(alive["store"], alive["rev"]))
         keg_bcs = [b for b, nm_ in zip(lst["bc"], lst["name"]) if is_keg(nm_)]
         keg_sales = fetch_bc_sales(keg_bcs, list(alive["store"])) if keg_bcs else {}
@@ -4300,6 +4383,24 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
                    u"кег: этот ШК нигде не продавался за %d дн. - делю по обороту точек, проверьте" % SPLIT_DAYS_BC)
         routes.append((kind, why, sup or u"(поставщик не определён)"))
     lst["kind"], lst["why"], lst["sup"] = [x[0] for x in routes], [x[1] for x in routes], [x[2] for x in routes]
+    eff_items, eff_rank = None, None
+    if tgt:                                               # всё на один магазин: и товар РЦ, и кеги; обычный маршрут - для справки
+        lst["why"] = [u"весь вывоз на %s (обычно: %s - %s)" % (tgt, k_, w_) for k_, w_ in zip(lst["kind"], lst["why"])]
+        lst["kind"] = KIND_SHOPS
+        eff_items, e_t = sell_estimate(lst, tgt, sales)
+        eff_rank = pd.DataFrame([sell_estimate(lst, s_, sales)[1] for s_ in alive["store"]])
+        eff_rank["rev"] = [float(rev_all.get(s_, 0.0)) for s_ in eff_rank["store"]]
+        eff_rank = eff_rank.sort_values(["share", "rev"], ascending=[False, False], kind="stable").reset_index(drop=True)
+        eff_rank.insert(0, "place", range(1, len(eff_rank) + 1))
+        best = eff_rank.iloc[0]
+        place = int(eff_rank.loc[eff_rank["store"] == tgt, "place"].iloc[0])
+        info["eff"] = {"target": tgt, "share": e_t["share"], "place": place, "of": len(eff_rank), "best": best["store"], "best_share": float(best["share"])}
+        unit_ = u"суммы (себестоимость)" if e_t["by_sum"] else u"единиц"
+        info["notes"] = list(info.get("notes") or []) + [
+            u"Весь вывоз на %s. Оценка: за %d дн. там продастся ~%.0f%% %s (%.0f из %.0f грн), если продажи будут как за прошлые %d дн.; "
+            u"остаток магазина не учитывается. Не продавались там %d поз. на %.0f грн. Место среди %d точек: %d; лучший по оценке - %s (%.0f%%)"
+            % (tgt, EFF_DAYS, 100 * e_t["share"], unit_, e_t["sum_in"], e_t["sum"], EFF_DAYS, e_t["pos_no"], e_t["sum_no"],
+               len(eff_rank), place, best["store"], 100 * float(best["share"]))]
     if not shops and (lst["kind"] == KIND_SHOPS).any():
         info["problems"].append(u"Нет ни одной точки-получателя (живые точки не на ЮА за последние %d дн. продаж не найдены: "
                                 u"проверьте, обновлялся ли оборот в BigQuery), а позиций на точки %d"
@@ -4314,7 +4415,7 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         info["notes"] = list(info.get("notes") or []) + [
             u"Точек: %d (прямые поставки %.0f грн / %.0f-%.0f грн на точку = в среднем %.0f грн)"
             % (len(shops), direct_sum, per_shop[0], per_shop[1], direct_sum / max(1, len(shops)))]
-    if keg_bcs:
+    if keg_bcs and not tgt:
         info["notes"] = list(info.get("notes") or []) + [
             (u"Кеги (%d поз.) на %s не едут: делятся между выбранными точками, где этот ШК продавался за %d дн. (не продавался - по обороту)"
              % (len(keg_bcs), SPLIT_RC_NAME, SPLIT_DAYS_BC)) if auto_points else
@@ -4328,6 +4429,9 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     def _alloc(pts):
         out_ = []      # (адрес, ШК, количество)
         for r in lst.itertuples(index=False):
+            if tgt:                                     # всё на один магазин: количество целиком
+                out_.append((tgt, r.bc, float(r.qty)))
+                continue
             if r.kind == KIND_RC:
                 if not skip_rc:
                     out_.append((SPLIT_RC_NAME, r.bc, float(r.qty)))
@@ -4438,6 +4542,23 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     for r in lst.sort_values(["kind", "sup", "name"]).itertuples(index=False):
         ws.append([r.bc, r.name, r.qty, r.unit, r.sum, (u"Склад (РЦ): файл не делался (режим «без РЦ»)" if skip_rc else u"Склад (РЦ)") if r.kind == KIND_RC else u"Распределение по точкам", r.sup, r.why])
     _fit_widths(ws)
+    if eff_items is not None:
+        ws = wb.create_sheet(u"Оценка продаж %d дн" % EFF_DAYS)
+        ws.append([u"Штрих-код", u"Название", u"Кол-во", u"Ед.", u"Сумма", u"Продано на %s за %d дн." % (tgt, EFF_DAYS),
+                   u"Продастся за %d дн. (оценка), ед." % EFF_DAYS, u"Продастся, грн", u"Дней до продажи (оценка)"])
+        for r in eff_items.sort_values(["in_sum", "sum"], ascending=[True, False], kind="stable").itertuples(index=False):
+            ws.append([r.bc, r.name, r.qty, r.unit, r.sum, r.sales, round(r.in_days, 3), r.in_sum,
+                       r.days_to_sell if r.days_to_sell is not None else u"не продавался"])
+        ws.append([u"", u"ИТОГО", round(float(eff_items["qty"].sum()), 3), u"", round(float(eff_items["sum"].sum()), 2), u"",
+                   round(float(eff_items["in_days"].sum()), 3), round(float(eff_items["in_sum"].sum()), 2), u""])
+        _fit_widths(ws)
+        ws = wb.create_sheet(u"Сравнение магазинов")
+        ws.append([u"Место", u"Магазин", u"Продастся за %d дн., %%" % EFF_DAYS, u"Продастся, грн", u"Позиций с продажами",
+                   u"Позиций без продаж", u"Без продаж, грн", u"Оборот за %d дн., грн" % SPLIT_DAYS_SHOP, u"Выбран"])
+        for r in eff_rank.itertuples(index=False):
+            ws.append([r.place, r.store, round(100 * r.share, 1), r.sum_in, r.pos_sold, r.pos_no, r.sum_no, round(r.rev),
+                       u"да" if r.store == tgt else u""])
+        _fit_widths(ws)
     ws = wb.create_sheet(u"Матрица ШК x адрес")
     cols = [a for a in order if a in set(al["addr"])]
     mx = al.pivot_table(index=["bc"], columns="addr", values="qty", aggfunc="sum").reindex(columns=cols)
@@ -4501,7 +4622,7 @@ def _split_shops(text):
 def _parse_args(argv):
     a = {"selftest": False, "auto": False, "shops": None, "no_ua": False, "offline": False, "rm": False,
          "excl": [], "incl": [], "split": None, "day": None, "top": None, "with_rc": False, "no_rc": False, "update": None,
-         "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False}
+         "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False, "to_shop": None}
     it = iter(argv)
     for x in it:
         t = x.lower().lstrip("-/")
@@ -4547,6 +4668,8 @@ def _parse_args(argv):
                 a["top"] = int(v)
             except ValueError:
                 print(u"--top: ожидается число 1..%d, получено «%s»" % (SPLIT_TOP_N, v))
+        elif t in ("to-shop", "to_shop"):              # весь вывоз на один магазин (с оценкой продаж за 60 дн.)
+            a["to_shop"] = next(it, "")
         elif t == "day":                               # ГГГГ-ММ-ДД папки результата (по умолчанию из файла)
             a["day"] = next(it, "")
         elif t == "shops":
@@ -6541,6 +6664,14 @@ def run_app2(dirs=None, test_mode=False):
     auto_var = tk.BooleanVar(value=False)
     ttk.Checkbutton(r, text=u"Подобрать число точек по сумме: 5-7 тыс. грн прямых поставок на точку (число выше тогда не учитывается)",
                     variable=auto_var).pack(side="left")
+    r = row(c, px(8))
+    ttk.Label(r, text=u"Весь вывоз на один магазин:").pack(side="left")
+    one_var = tk.StringVar(value=u"")
+    _one_vals = [u""] + sorted(set(x for v_ in rz.ROUTES.values() for x in v_))
+    ttk.Combobox(r, textvariable=one_var, values=_one_vals, width=30).pack(side="left", padx=(px(8), px(8)))
+    ttk.Label(r, text=u"пусто - делить как обычно; выбран магазин - туда едет всё (и товар РЦ, и кеги), "
+                      u"в Распределение.xlsx оценка продаж за %d дн. и сравнение магазинов" % EFF_DAYS,
+              style="Hint.TLabel", wraplength=max(px(200), W - px(560)), justify="left").pack(side="left")
 
     def open_split_xlsx():
         d = (st["split"] or {}).get("out_dir")
@@ -6569,19 +6700,23 @@ def run_app2(dirs=None, test_mode=False):
             messagebox.showwarning(u"Распределение", chk["text"], parent=app)
             return
         n, skip, auto = _clamp_top(top_var.get()), not bool(rc_var.get()), bool(auto_var.get())
+        one = one_var.get().strip()
+        if one and not messagebox.askyesno(u"Распределение", u"Весь вывоз (%d поз., в т.ч. товар РЦ и кеги) - на один магазин: %s?"
+                                           % (chk["n"], one), parent=app):
+            return
 
         def done(info, out):
             st["split"] = info or {}
             tv2.delete(*tv2.get_children())
             for a, kk, q, sm in st["split"].get("summary", []):
                 tv2.insert("", "end", values=(a, kk, u"%.3f" % q, u"{:,.2f}".format(sm).replace(",", u" ")))
-            journal(u"Распределение на %d точек" % n, _split_text(st["split"]))
+            journal((u"Весь вывоз на %s" % one) if one else (u"Распределение на %d точек" % n), _split_text(st["split"]))
             ok = st["split"].get("ok")
             note2.config(text=u"Подробности - в «Журнале»" if ok else u"Есть ошибки - см. «Журнал»", foreground=MUT if ok else RED)
             if not ok:
                 status(u"Распределение: есть ошибки", RED)
-        run_bg(u"Распределение на %d точек" % n if not auto else u"Распределение (число точек по сумме)",
-               lambda: run_split(dirs, fp, top_n=n, skip_rc=skip, auto_points=auto), done)
+        run_bg((u"Весь вывоз на %s" % one) if one else (u"Распределение на %d точек" % n if not auto else u"Распределение (число точек по сумме)"),
+               lambda: run_split(dirs, fp, top_n=n, skip_rc=skip, auto_points=auto, target=one or None), done)
 
     # ================= НОВЫЙ ДЕНЬ =================
     p5 = nav_item("upd", u"3   Новый день")
@@ -6828,7 +6963,7 @@ def main(argv=None):
         return 0 if info.get("ok") else 2
     if args["split"]:
         info = run_split(DIRS, args["split"], shop=(args["shops"] or [None])[0], day=args["day"], top_n=args["top"], skip_rc=args["no_rc"],
-                         auto_points=args["auto_points"])
+                         auto_points=args["auto_points"], target=args["to_shop"])
         print(_split_text(info))
         return 0 if info.get("ok") else 2
     if args["map_list"]:
