@@ -3123,7 +3123,7 @@ def _selftest_ua_shops(ck):
 
 
 def _selftest_split_one(ck):
-    """«Весь вывоз на один магазин»: всё (товар РЦ, прямой, кег) едет на выбранный магазин; оценка продаж за EFF_DAYS дней;
+    """«Весь вывоз на один магазин»: прямой товар и кег едут на выбранный магазин, товар РЦ - на РЦ; оценка продаж за EFF_DAYS дней;
     магазин не из живых точек (или источник) - понятная ошибка."""
     tmp = tempfile.mkdtemp(prefix="vyvoz_one_")
     g = globals()
@@ -3148,10 +3148,12 @@ def _selftest_split_one(ck):
         ref0 = make_ref(pd.DataFrame(columns=["barcode", "product_name", "status", "supplier"]))
         info = run_split(d, corr, ref=ref0, target=u"точка б")
         al = info.get("alloc", pd.DataFrame(columns=["addr", "bc", "qty"]))
-        ck(info.get("ok") and set(al["addr"]) == {u"Точка Б"} and abs(float(al["qty"].sum()) - 25.0) < 1e-9,
-           "всё на один магазин: и РЦ, и кег на Точку Б: %s %s" % (al.to_dict("records"), info.get("problems")))
+        rc_ = al[al["addr"] == SPLIT_RC_NAME]
+        ck(info.get("ok") and set(al["addr"]) == {u"Точка Б", SPLIT_RC_NAME} and list(rc_["bc"]) == [RC1]
+           and abs(float(al.loc[al["addr"] == u"Точка Б", "qty"].sum()) - 13.0) < 1e-9,
+           "всё на один магазин: прямой и кег на Точку Б, товар РЦ на РЦ: %s %s" % (al.to_dict("records"), info.get("problems")))
         e_ = info.get("eff") or {}
-        ck(abs(e_.get("share", 0) - 130.0 / 323.0) < 1e-6 and e_.get("place") == 1 and e_.get("of") == 3,
+        ck(abs(e_.get("share", 0) - 100.0 / 263.0) < 1e-6 and e_.get("place") == 1 and e_.get("of") == 3,
            "оценка продаж за 60 дн.: доля %s, место %s из %s" % (e_.get("share"), e_.get("place"), e_.get("of")))
         wb_ = load_workbook(os.path.join(info["out_dir"], u"Распределение.xlsx"), read_only=True)
         ck(u"Оценка продаж %d дн" % EFF_DAYS in wb_.sheetnames and u"Сравнение магазинов" in wb_.sheetnames,
@@ -4300,8 +4302,9 @@ def keg_shares(bc, alive, rev, sales):
 def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=False, auto_points=False, per_shop=(5000.0, 7000.0),
               target=None):
     """Исправленный лист вывоза -> txt для ТСД по адресам + xlsx для проверки. -> dict(ok, out_dir, files, problems, summary)
-    target - «весь вывоз на один магазин»: все позиции (и товар РЦ, и кеги) едут на этот магазин, плюс оценка продаж за
-    EFF_DAYS дней на нём и сравнение со всеми живыми точками не на ЮА."""
+    target - «весь вывоз на один магазин»: всё, что обычно делится по точкам (прямые поставки, кеги), едет на этот магазин;
+    товар РЦ - как обычно на Полевая-Склад (решение 14.10.2026). Плюс оценка продаж за EFF_DAYS дней на нём и сравнение со
+    всеми живыми точками не на ЮА."""
     reset_report()
     info = {"ok": False, "problems": [], "files": [], "summary": []}
     try:
@@ -4384,11 +4387,11 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         routes.append((kind, why, sup or u"(поставщик не определён)"))
     lst["kind"], lst["why"], lst["sup"] = [x[0] for x in routes], [x[1] for x in routes], [x[2] for x in routes]
     eff_items, eff_rank = None, None
-    if tgt:                                               # всё на один магазин: и товар РЦ, и кеги; обычный маршрут - для справки
-        lst["why"] = [u"весь вывоз на %s (обычно: %s - %s)" % (tgt, k_, w_) for k_, w_ in zip(lst["kind"], lst["why"])]
-        lst["kind"] = KIND_SHOPS
-        eff_items, e_t = sell_estimate(lst, tgt, sales)
-        eff_rank = pd.DataFrame([sell_estimate(lst, s_, sales)[1] for s_ in alive["store"]])
+    sh_lst = lst[lst["kind"] == KIND_SHOPS]
+    if tgt and len(sh_lst):                               # на один магазин - то, что обычно делится по точкам; товар РЦ - на РЦ
+        lst["why"] = [(u"весь вывоз на %s (обычно: %s)" % (tgt, w_)) if k_ == KIND_SHOPS else w_ for k_, w_ in zip(lst["kind"], lst["why"])]
+        eff_items, e_t = sell_estimate(sh_lst, tgt, sales)
+        eff_rank = pd.DataFrame([sell_estimate(sh_lst, s_, sales)[1] for s_ in alive["store"]])
         eff_rank["rev"] = [float(rev_all.get(s_, 0.0)) for s_ in eff_rank["store"]]
         eff_rank = eff_rank.sort_values(["share", "rev"], ascending=[False, False], kind="stable").reset_index(drop=True)
         eff_rank.insert(0, "place", range(1, len(eff_rank) + 1))
@@ -4397,9 +4400,9 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         info["eff"] = {"target": tgt, "share": e_t["share"], "place": place, "of": len(eff_rank), "best": best["store"], "best_share": float(best["share"])}
         unit_ = u"суммы (себестоимость)" if e_t["by_sum"] else u"единиц"
         info["notes"] = list(info.get("notes") or []) + [
-            u"Весь вывоз на %s. Оценка: за %d дн. там продастся ~%.0f%% %s (%.0f из %.0f грн), если продажи будут как за прошлые %d дн.; "
+            u"Вывоз на точки (%d поз.) - весь на %s; товар РЦ - на %s. Оценка: за %d дн. там продастся ~%.0f%% %s (%.0f из %.0f грн), если продажи будут как за прошлые %d дн.; "
             u"остаток магазина не учитывается. Не продавались там %d поз. на %.0f грн. Место среди %d точек: %d; лучший по оценке - %s (%.0f%%)"
-            % (tgt, EFF_DAYS, 100 * e_t["share"], unit_, e_t["sum_in"], e_t["sum"], EFF_DAYS, e_t["pos_no"], e_t["sum_no"],
+            % (len(sh_lst), tgt, SPLIT_RC_NAME, EFF_DAYS, 100 * e_t["share"], unit_, e_t["sum_in"], e_t["sum"], EFF_DAYS, e_t["pos_no"], e_t["sum_no"],
                len(eff_rank), place, best["store"], 100 * float(best["share"]))]
     if not shops and (lst["kind"] == KIND_SHOPS).any():
         info["problems"].append(u"Нет ни одной точки-получателя (живые точки не на ЮА за последние %d дн. продаж не найдены: "
@@ -4429,7 +4432,7 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     def _alloc(pts):
         out_ = []      # (адрес, ШК, количество)
         for r in lst.itertuples(index=False):
-            if tgt:                                     # всё на один магазин: количество целиком
+            if tgt and r.kind == KIND_SHOPS:            # всё на один магазин: количество целиком; товар РЦ - ниже, как обычно
                 out_.append((tgt, r.bc, float(r.qty)))
                 continue
             if r.kind == KIND_RC:
@@ -6669,7 +6672,7 @@ def run_app2(dirs=None, test_mode=False):
     one_var = tk.StringVar(value=u"")
     _one_vals = [u""] + sorted(set(x for v_ in rz.ROUTES.values() for x in v_))
     ttk.Combobox(r, textvariable=one_var, values=_one_vals, width=30).pack(side="left", padx=(px(8), px(8)))
-    ttk.Label(r, text=u"пусто - делить как обычно; выбран магазин - туда едет всё (и товар РЦ, и кеги), "
+    ttk.Label(r, text=u"пусто - делить как обычно; выбран магазин - туда едет всё, что обычно делится по точкам (и кеги), товар РЦ - на Полевая-Склад; "
                       u"в Распределение.xlsx оценка продаж за %d дн. и сравнение магазинов" % EFF_DAYS,
               style="Hint.TLabel", wraplength=max(px(200), W - px(560)), justify="left").pack(side="left")
 
@@ -6701,8 +6704,8 @@ def run_app2(dirs=None, test_mode=False):
             return
         n, skip, auto = _clamp_top(top_var.get()), not bool(rc_var.get()), bool(auto_var.get())
         one = one_var.get().strip()
-        if one and not messagebox.askyesno(u"Распределение", u"Весь вывоз (%d поз., в т.ч. товар РЦ и кеги) - на один магазин: %s?"
-                                           % (chk["n"], one), parent=app):
+        if one and not messagebox.askyesno(u"Распределение", u"Всё, что обычно делится по точкам (в т.ч. кеги), - на один магазин: %s?\nТовар РЦ - как обычно на Полевая-Склад (лист: %d поз.)."
+                                           % (one, chk["n"]), parent=app):
             return
 
         def done(info, out):
