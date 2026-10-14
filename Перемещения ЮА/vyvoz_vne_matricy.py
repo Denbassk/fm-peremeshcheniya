@@ -3032,6 +3032,15 @@ def _selftest_split_guard(ck):
            "имя из списка ЮА, которого нет в BigQuery, показывается")
         shop = u"Тест Источник"
         B1, B2 = _ean("482100400011"), _ean("482100400012")
+        z_ = os.path.join(tmp, u"нули.xlsx")                                 # Excel превратил ШК в число и потерял ноль
+        _write_vyvoz_list_xlsx(z_, shop, u"08.10.2026", [(B1, u"Товар", 2, u"шт", 1.0, u"Пост")])
+        wbz = load_workbook(z_)
+        wbz[SHEET_VYVOZ].cell(row=5, column=2, value=12345678905)
+        wbz[SHEET_VYVOZ].cell(row=5, column=4, value=u"2,5")
+        wbz.save(z_)
+        lz_ = read_corrected_list(z_)[0]
+        ck(list(lz_["bc"]) == [u"012345678905"] and abs(float(lz_["qty"].iloc[0]) - 2.5) < 1e-9,
+           "исправленный лист: ведущий ноль восстановлен, количество с запятой: %s" % lz_[["bc", "qty"]].to_dict("records"))
         corr = os.path.join(tmp, CORR_DIR, u"Тест_Источник.xlsx")
         _write_vyvoz_list_xlsx(corr, shop, u"08.10.2026", [(B1, u"Прямой товар 1", 12, u"шт", 5.0, u"Пост"),
                                                            (B2, u"Прямой товар 2", 9, u"шт", 7.0, u"Пост")])
@@ -3936,9 +3945,9 @@ def read_corrected_list(path):
     for r in rows[hi + 1:]:
         if not r or r[i_bc] in (None, u"") or u"ИТОГО" in str(r[i_nm] or u"").upper():
             continue
-        bc = rz.fmt_barcode(r[i_bc])
+        bc = rz.restore_barcode(rz.fmt_barcode(r[i_bc]))[0]          # Excel сделал ШК числом: ведущие нули как в расчёте
         try:
-            q = float(r[i_q])
+            q = float(r[i_q].strip().replace(u" ", u"").replace(u"\u00a0", u"").replace(u",", u".") if isinstance(r[i_q], str) else r[i_q])
         except (TypeError, ValueError):
             notes.append(u"ШК %s: количество «%s» не число, строка пропущена" % (bc, r[i_q]))
             continue
