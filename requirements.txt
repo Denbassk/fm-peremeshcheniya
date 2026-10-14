@@ -1,3 +1,8 @@
 pandas
 openpyxl
+sv-ttk
+# GUI «Вывоз вне матрицы» (перенос с tkinter)
+PySide6
+# сборка exe на Windows (build_*.bat); в облаке exe не собираем
+pyinstaller
 # google-cloud-bigquery нужен только локально, в облаке ключа нет

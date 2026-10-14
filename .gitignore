@@ -58,3 +58,6 @@ __pycache__/
 
 **/.claude/worktrees/
 desktop.ini
+
+# --- настройки Claude Code (хук старта облачной сессии) ---
+!.claude/settings.json
