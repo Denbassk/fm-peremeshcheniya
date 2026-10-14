@@ -339,22 +339,31 @@ def _is_polevaya(s):
 
 
 def guess_day(path):
-    """Дата выгрузки по имени файла: ДД.ММ.ГГГГ (год из 4 цифр, номер дома из названия магазина не путается с датой:
-    «Качанівська 19 8.10.2026» у raschet_zakaza читалось как 19.08.2010 и выбиралась старая выгрузка); иначе как в raschet_zakaza."""
+    """Дата выгрузки по имени файла: ДД.ММ.ГГГГ, ГГГГ-ММ-ДД или ДД.ММ.ГГ (номер дома из названия магазина не путается с датой:
+    «Качанівська 19 8.10.2026» у raschet_zakaza читалось как 19.08.2010). Даты с годом в имени нет - отметка выгрузки из
+    свойств xlsx, иначе сегодня (разбор raschet_zakaza не используется: «Качанівська 19 08.10» он читает как 19.08.2010)."""
     b = os.path.basename(path)
-    for pat in (r"(?<!\d)(\d{1,2})[.\-_](\d{1,2})[.\-_](20\d{2})(?!\d)", r"(?<!\d)(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{2})(?!\d)"):
+    for pat, order in ((r"(?<!\d)(\d{1,2})[.\-_](\d{1,2})[.\-_](20\d{2})(?!\d)", "dmy"),
+                       (r"(?<!\d)(20\d{2})[.\-_](\d{1,2})[.\-_](\d{1,2})(?!\d)", "ymd"),
+                       (r"(?<!\d)(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{2})(?!\d)", "dmy")):
         m = re.search(pat, b)
         if m:
-            d_, mo_, y_ = (int(g) for g in m.groups())
+            a_, b_, c_ = (int(g) for g in m.groups())
+            d_, mo_, y_ = (c_, b_, a_) if order == "ymd" else (a_, b_, c_)
             try:
                 return date(y_ + 2000 if y_ < 100 else y_, mo_, d_), u"из имени файла"
             except ValueError:
                 pass
-    return rz.guess_day(path)
+    st_ = rz.read_export_stamp(path) if os.path.isfile(path) else None
+    if st_:
+        return st_.date(), u"из отметки выгрузки: в имени файла даты с годом нет"
+    return date.today(), u"сегодняшняя: в имени файла даты с годом нет"
 
 
 def _pick_latest(paths):
-    return sorted(paths, key=lambda p: (guess_day(p)[0], os.path.getmtime(p)))[-1]
+    """Самый свежий файл: дата выгрузки, при равной дате - отметка выгрузки из свойств xlsx (время файла меняется при
+    копировании, отметка - нет; её нет - время файла)."""
+    return sorted(paths, key=lambda p: (guess_day(p)[0], _file_stamp(p)))[-1]
 
 
 def check_fresh(label, path):
@@ -2755,6 +2764,8 @@ def _self_test_body(gui=False):
     gd_ = [guess_day(u"Состояние склада Качанівська 19 8.10.2026.xlsx")[0], guess_day(u"Состояние склада Склад ЮА_07.10.2026_2026-10-07_105335.xlsx")[0],
            guess_day(u"Состояние склада Качановская на  06.10.2026.xlsx")[0], guess_day(u"Состояние склада Грозненська 38 8.10.26.xlsx")[0]]
     ck(gd_ == [date(2026, 10, 8), date(2026, 10, 7), date(2026, 10, 6), date(2026, 10, 8)], "дата по имени файла (номер дома не дата): %s" % gd_)
+    gd2_ = [guess_day(u"Состояние склада 2026-10-08.xlsx")[0], guess_day(u"Качанівська 19 08.10.xlsx")[0]]
+    ck(gd2_ == [date(2026, 10, 8), date.today()], "дата ГГГГ-ММ-ДД; без года в имени - не 19.08.2010: %s" % gd2_)
     tp_ = tempfile.mkdtemp(prefix="vyvoz_days_")
     try:
         fa_, fb_ = os.path.join(tp_, u"Состояние склада Качановская на  06.10.2026.xlsx"), os.path.join(tp_, u"Состояние склада Качанівська 19 8.10.2026.xlsx")
@@ -5620,7 +5631,7 @@ def pick_default_store(found):
         v = found[shop]
         p = v[0] if isinstance(v, (tuple, list)) else v
         try:
-            key = (guess_day(p)[0], _mtime(p))
+            key = (guess_day(p)[0], _file_stamp(p))
         except Exception:
             continue
         if best_key is None or key > best_key:
