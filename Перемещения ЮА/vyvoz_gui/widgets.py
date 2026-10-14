@@ -62,7 +62,7 @@ def help_button(text, title=u""):
     b.setAccessibleDescription(text)
     b.setFixedSize(QSize(32, 32))
     on_theme(lambda: (b.setIcon(A.icon("help", Theme.c["text_muted"], 20)), b.setIconSize(QSize(20, 20))))
-    b.clicked.connect(lambda: QToolTip.showText(b.mapToGlobal(b.rect().bottomLeft()), text, b))
+    b.clicked.connect(lambda: QToolTip.showText(b.mapToGlobal(b.rect().bottomLeft()), b.toolTip(), b))   # текст можно менять
     return b
 
 

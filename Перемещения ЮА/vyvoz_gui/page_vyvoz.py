@@ -5,18 +5,24 @@
 import os
 
 from PySide6.QtCore import QItemSelectionModel, Qt
-from PySide6.QtWidgets import QButtonGroup, QCheckBox, QHBoxLayout, QLabel, QMessageBox, QRadioButton
+from PySide6.QtWidgets import QButtonGroup, QCheckBox, QHBoxLayout, QLabel, QMessageBox, QRadioButton, QWidget
 
 from . import tokens as T
 from .app import Page
 from .suppliers import SuppliersDialog
-from .widgets import Banner, Card, RowsModel, StatusLine, button, fit_rows, muted, table
+from .widgets import Banner, Card, RowsModel, StatusLine, button, fit_rows, help_button, muted, table
 
 INPUT_HELP = (u"Нужен свежий файл в каждой обязательной папке. Склад ЮА - со ВСЕМИ строками, и нулевыми; приходы ЮА - "
               u"за весь период. Если в папке два файла (×2), берётся самый свежий. Старый или отсутствующий файл выгрузите "
               u"заново и нажмите «Перечитать». Двойной щелчок по строке открывает папку.")
 STORE_HELP = (u"По умолчанию выбран магазин с самой свежей выгрузкой. Нужен другой - щёлкните по нему; несколько - "
-              u"Ctrl или Shift. «Скрыть» убирает магазин только из таблицы, файл выгрузки остаётся в папке.")
+              u"Ctrl или Shift. «Убрать из списка» убирает магазин только из таблицы, файл выгрузки остаётся в папке; "
+              u"«Вернуть убранные» показывает их снова.")
+MODE_SHORT = {                  # одна строка на экране; полное описание режима - под «?» (mode_description ядра)
+    "normal": u"Автоматические исключения: сигареты, кеги, кулинария, расходники, поставщики и ШК из настроек.",
+    "manual": u"Сигареты и кеги тоже попадут в список - лишнее удалите в Excel.",
+    "sweep": u"Вывозится всё, кроме заморозки, скоропортов и расходников.",
+}
 MODE_HELP = (u"Обычный - автоматические исключения (сигареты, кеги, расходники, кулинария, список ШК, поставщики). "
              u"Ручной выбор - сигареты и кеги тоже попадают в список с причиной в последней колонке, лишнее удаляете в Excel. "
              u"Зачистка остатка - вывозится всё, кроме заморозки, скоропортов и расходников. Списки поставщиков и ШК "
@@ -50,9 +56,9 @@ class VyvozPage(Page):
         c = Card(u"Шаг 2 · Выберите магазин", STORE_HELP)
         c.add_head(button(u"Папка МАГАЗИНЫ", "folder_open", on_click=lambda: core.open_path(self.d.stores)))
         self.b_all = button(u"Выбрать все", "select_all", on_click=lambda: self.st_view.selectAll())
-        self.b_hide = button(u"Скрыть", "visibility_off", tip=u"Убрать выделенные магазины из таблицы (файлы остаются)",
+        self.b_hide = button(u"Убрать из списка", "visibility_off", tip=u"Убрать выделенные магазины из таблицы (файлы остаются)",
                              on_click=self.hide_selected)
-        self.b_show = button(u"Показать скрытые", "visibility", on_click=self.restore_hidden)
+        self.b_show = button(u"Вернуть убранные", "visibility", on_click=self.restore_hidden)
         self.st_model = RowsModel((("shop", u"Магазин", Qt.AlignLeft), ("file", u"Файл выгрузки", Qt.AlignLeft),
                                    ("time", u"Выгружено", Qt.AlignLeft), ("age", u"Свежесть", Qt.AlignLeft)),
                                   level_key="level", status_col=3)
@@ -84,18 +90,36 @@ class VyvozPage(Page):
             row.addWidget(rb)
         row.addStretch(1)
         c.lay.addLayout(row)
+        row = QHBoxLayout()
         self.mode_line = StatusLine()
-        c.lay.addWidget(self.mode_line)
+        row.addWidget(self.mode_line)
+        self.mode_help = help_button(u"", u"режим")                 # полное описание режима и список поставщиков - здесь
+        row.addWidget(self.mode_help, 0, Qt.AlignVCenter)
+        row.addStretch(1)
+        c.lay.addLayout(row)
         self.rm_cb = QCheckBox(u"Вывозить и товар из матрицы, который на ЮА ещё не завозился")
         self.rm_cb.setChecked(True)
         c.lay.addWidget(self.rm_cb)
+        # свёрнутый блок «Настройки вывоза»: списки «не вывозить» меняют редко
+        self.opts_btn = button(u"Настройки вывоза", "expand_more", kind="ghost")
+        self.opts_btn.setCheckable(True)
+        self.opts_btn.setToolTip(u"Поставщики и ШК, которые не вывозим. Действуют на все следующие расчёты")
+        self.opts_btn.setAccessibleName(u"Настройки вывоза: развернуть или свернуть")
         row = QHBoxLayout()
-        row.addWidget(button(u"Поставщики: кого не вывозить…", "store", on_click=self.open_suppliers))
-        row.addWidget(button(u"Список ШК «не вывозить» (Excel)…", "playlist_remove", on_click=self.open_keep))
+        row.addWidget(self.opts_btn)
         row.addStretch(1)
         c.lay.addLayout(row)
-        self.sup_lbl = muted()
-        c.lay.addWidget(self.sup_lbl)
+        self.opts = QWidget()
+        orow = QHBoxLayout(self.opts)
+        orow.setContentsMargins(T.SPACING_MD, 0, 0, 0)
+        self.b_sup = button(u"Поставщики", "store", on_click=self.open_suppliers)
+        self.b_keep = button(u"Исключённые ШК", "playlist_remove", tip=u"Список ШК «не вывозить» (Excel)", on_click=self.open_keep)
+        orow.addWidget(self.b_sup)
+        orow.addWidget(self.b_keep)
+        orow.addStretch(1)
+        self.opts.hide()
+        c.lay.addWidget(self.opts)
+        self.opts_btn.toggled.connect(self.opts.setVisible)
         self.body.addWidget(c)
         self.mode_group.buttonClicked.connect(lambda *_: self.mode_refresh())
         self.rm_cb.toggled.connect(lambda *_: self.mode_refresh())
@@ -204,8 +228,8 @@ class VyvozPage(Page):
                 sm.select(self.st_model.index(i, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows)
         n_h = len(self.found) - len(shown)
         self.b_show.setEnabled(bool(n_h))
-        self.b_show.setText(u"Показать скрытые (%d)" % n_h if n_h else u"Показать скрытые")
-        self.hid_lbl.setText((u"Скрыто: %s" % u"; ".join(sorted(x for x in self.found if x not in shown))) if n_h else u"")
+        self.b_show.setText(u"Вернуть убранные (%d)" % n_h if n_h else u"Вернуть убранные")
+        self.hid_lbl.setText((u"Убраны из списка: %s" % u"; ".join(sorted(x for x in self.found if x not in shown))) if n_h else u"")
         self.hid_lbl.setVisible(bool(n_h))
         self.b_all.setEnabled(len(rows) > 1)
         self.b_hide.setEnabled(bool(rows))
@@ -242,15 +266,15 @@ class VyvozPage(Page):
     def hide_selected(self):
         sel = self.selected()
         if not sel:
-            QMessageBox.information(self, u"Скрыть магазин", u"Выделите магазин, который нужно скрыть из таблицы.")
+            QMessageBox.information(self, u"Убрать из списка", u"Выделите магазин, который нужно убрать из таблицы.")
             return
-        if QMessageBox.question(self, u"Скрыть магазин", u"Скрыть из таблицы: %s?\n\nФайл выгрузки остаётся в папке, ничего не "
-                                u"удаляется. Вернуть - кнопка «Показать скрытые»." % u"; ".join(sel)) != QMessageBox.Yes:
+        if QMessageBox.question(self, u"Убрать из списка", u"Убрать из таблицы: %s?\n\nФайл выгрузки остаётся в папке, ничего не "
+                                u"удаляется. Вернуть - кнопка «Вернуть убранные»." % u"; ".join(sel)) != QMessageBox.Yes:
             return
         try:
             self.core.save_hidden_stores(self.d, self.core.load_hidden_stores(self.d) | set(sel))
         except Exception as e:
-            QMessageBox.critical(self, u"Скрыть магазин", u"Не удалось сохранить: %s" % e)
+            QMessageBox.critical(self, u"Убрать из списка", u"Не удалось сохранить: %s" % e)
             return
         self.render_stores()
 
@@ -258,7 +282,7 @@ class VyvozPage(Page):
         try:
             self.core.save_hidden_stores(self.d, set())
         except Exception as e:
-            QMessageBox.critical(self, u"Показать скрытые", u"Не удалось сохранить: %s" % e)
+            QMessageBox.critical(self, u"Вернуть убранные", u"Не удалось сохранить: %s" % e)
             return
         self.render_stores(keep=self.selected())
 
@@ -273,8 +297,11 @@ class VyvozPage(Page):
         self.rm_cb.setEnabled(m != "sweep")
         self.rm_cb.setToolTip(u"В зачистке не действует: вывозится всё" if m == "sweep" else u"")
         t, lv = self.core.mode_description(m, n, self.rm_cb.isChecked())
-        self.mode_line.set(t, "WARN" if lv == "WARN" else "INFO")
-        self.sup_lbl.setText(self.core.suppliers_note(m, n, when))
+        note = self.core.suppliers_note(m, n, when)
+        self.mode_line.set(MODE_SHORT.get(m, u""), "WARN" if lv == "WARN" else "INFO")
+        self.mode_help.setToolTip(u"%s\n\n%s" % (t, note))
+        self.mode_help.setAccessibleDescription(u"%s %s" % (t, note))
+        self.b_sup.setToolTip(note)
         self.update_action()
 
     def open_suppliers(self):
