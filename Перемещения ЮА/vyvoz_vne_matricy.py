@@ -2030,6 +2030,18 @@ def _ean(body):
 
 
 def self_test(gui=False):
+    """Самотест не зависит от настроек пользователя: на время проверки UA_COUNT_INVENTORY = True (под это
+    написаны контрольные случаи), потом возвращается прежнее значение. Иначе при False самотест падал и программа
+    не запускалась, а после самотеста настройка всё равно становилась True."""
+    saved = UA_COUNT_INVENTORY
+    globals()["UA_COUNT_INVENTORY"] = True
+    try:
+        return _self_test_body(gui)
+    finally:
+        globals()["UA_COUNT_INVENTORY"] = saved
+
+
+def _self_test_body(gui=False):
     fails = []
 
     def ck(cond, msg):
