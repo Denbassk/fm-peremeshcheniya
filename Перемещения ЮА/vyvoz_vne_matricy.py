@@ -32,6 +32,7 @@
 import os
 import re
 import sys
+import io
 import json
 import time
 import shutil
@@ -219,6 +220,30 @@ def pack_base(name):
     return re.sub(u"[^a-z0-9а-я]+", u"", t.translate(_PACK_H))
 
 
+def read_ref_csv(path):
+    """Справочник csv, который правят в Excel: кодировка utf-8 или cp1251, разделитель «,» или «;» (Excel с русской или
+    украинской локалью сохраняет через «;»). Строка, где Excel склеил поля через «;» в первую колонку, разбирается."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1251", errors="replace")
+    lines = text.splitlines()
+    head = lines[0] if lines else u""
+    sep = ";" if head.count(";") > head.count(",") else ","
+    df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str, keep_default_na=False)
+    if sep == "," and len(df.columns) > 1:
+        for i, v in enumerate(df.iloc[:, 0]):
+            if ";" in v:
+                parts = [x.strip() for x in v.split(";")]
+                df.iat[i, 0] = parts[0]
+                for j, pv in enumerate(parts[1:len(df.columns)], 1):
+                    if not str(df.iat[i, j]).strip():
+                        df.iat[i, j] = pv
+    return df
+
+
 KEEP_FILE = u"vyvoz_keep.csv"
 DEFAULT_KEEP = [(u"4820116280075", u"Сірники (1)", u"добавлены в матрицу 05.10.2026, на ЮА ещё не приходили")]
 
@@ -231,7 +256,7 @@ def load_keep_shk(dirs):
         if not os.path.isfile(path):
             os.makedirs(dirs.cache, exist_ok=True)
             pd.DataFrame(DEFAULT_KEEP, columns=[u"ШК", u"Название", u"Комментарий"]).to_csv(path, index=False, encoding="utf-8-sig")
-        df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        df = read_ref_csv(path)
 
         def first_bc(x):
             m = re.match(r"^\W*(\d{6,14})(?!\d)", str(x))       # Excel мог положить всю строку в первую ячейку: «ШК,Название,...»
@@ -257,7 +282,7 @@ def load_shk_pairs(dirs):
         if not os.path.isfile(path):
             os.makedirs(dirs.cache, exist_ok=True)
             pd.DataFrame(DEFAULT_SHK_PAIRS, columns=[u"ШК Family", u"ШК ЮА", u"Комментарий"]).to_csv(path, index=False, encoding="utf-8-sig")
-        df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        df = read_ref_csv(path)
         return {bc_key(a): bc_key(b) for a, b in zip(df.iloc[:, 0], df.iloc[:, 1]) if bc_key(a) and bc_key(b)}
     except Exception as e:
         R.check("WARN", u"Таблица пар ШК Family-ЮА", u"не прочитана (%s): работаю без неё" % e)
@@ -906,7 +931,7 @@ def load_excluded_suppliers(dirs):
     if not os.path.isfile(path):
         save_excluded_suppliers(dirs, {sup_norm(n): n for n in DEFAULT_EXCLUDED_SUPPLIERS})
     try:
-        df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        df = read_ref_csv(path)
         col = u"поставщик" if u"поставщик" in df.columns else df.columns[0]
         st = df[u"статус"].str.lower() if u"статус" in df.columns else pd.Series([u"не вывозить"] * len(df))
         return {sup_norm(n): n.strip() for n, x in zip(df[col], st) if n.strip() and not x.startswith(u"вывоз")}
@@ -2996,6 +3021,15 @@ def _selftest_split_guard(ck):
     try:
         d = Dirs(tmp)
         d.ensure()
+        # справочники после правки в Excel: cp1251 и «;», либо «;» в строке файла с «,»
+        with open(os.path.join(d.cache, UA_STORES_FILE), "wb") as f_:
+            f_.write(u"Магазин;Комментарий\r\nГрозненська 38;переходит\r\nНьютона 102;список\r\n".encode("cp1251"))
+        ck(load_ua_stores(d) == {_skey(u"Грозненська 38"), _skey(u"Ньютона 102")}, "список ЮА в cp1251 через «;»: %s" % load_ua_stores(d))
+        with open(os.path.join(d.cache, UA_STORES_FILE), "wb") as f_:
+            f_.write(u"\ufeffМагазин,Комментарий\r\nГрозненська 38,переходит\r\nНьютона 102;перешла\r\n".encode("utf-8"))
+        ck(load_ua_stores(d) == {_skey(u"Грозненська 38"), _skey(u"Ньютона 102")}, "список ЮА: строка с «;» в файле с «,»: %s" % load_ua_stores(d))
+        ck(ua_stores_not_found([u"Грозненська 38", u"Байрона 163", u"Полевая-Склад ЮА"], [u"Грозненська 38", u"Байрона 163А"]) == [u"Байрона 163"],
+           "имя из списка ЮА, которого нет в BigQuery, показывается")
         shop = u"Тест Источник"
         B1, B2 = _ean("482100400011"), _ean("482100400012")
         corr = os.path.join(tmp, CORR_DIR, u"Тест_Источник.xlsx")
@@ -3839,13 +3873,25 @@ def _csv_default(dirs, fname, rows, cols):
     if not os.path.isfile(path):
         os.makedirs(dirs.cache, exist_ok=True)
         pd.DataFrame(rows, columns=cols).to_csv(path, index=False, encoding="utf-8-sig")
-    return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    return read_ref_csv(path)
+
+
+def ua_store_names(dirs):
+    """Имена из Справочник\\vyvoz_ua_stores.csv как они записаны (для сверки с BigQuery)."""
+    df = _csv_default(dirs, UA_STORES_FILE, DEFAULT_UA_STORES, [u"Магазин", u"Комментарий"])
+    return [str(x).strip() for x in df.iloc[:, 0] if str(x).strip()]
 
 
 def load_ua_stores(dirs):
     """Магазины, которые на ЮА перешли или переходят (получателями раздачи не бывают). Справочник\\vyvoz_ua_stores.csv"""
-    df = _csv_default(dirs, UA_STORES_FILE, DEFAULT_UA_STORES, [u"Магазин", u"Комментарий"])
-    return set(_skey(x) for x in df.iloc[:, 0] if str(x).strip())
+    return set(_skey(x) for x in ua_store_names(dirs))
+
+
+def ua_stores_not_found(names, bq_stores):
+    """Магазины из списка ЮА, которых нет среди магазинов оборота в BigQuery (кроме Полевой и складов «... ЮА»): либо имя
+    записано не так, как в BigQuery (тогда магазин НЕ исключается из получателей), либо магазин закрыт."""
+    have = set(_skey(x) for x in bq_stores)
+    return [n for n in names if _skey(n) not in have and not _is_polevaya(n) and not rz.norm(n).endswith(u" юа")]
 
 
 def load_route_suppliers(dirs):
@@ -3987,7 +4033,9 @@ def pick_top_shops(ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP):
     lim = (datetime.strptime(last, "%Y-%m-%d") - pd.Timedelta(days=SPLIT_ALIVE_DAYS)).strftime("%Y-%m-%d")
     keep = [(_skey(s) not in ua_stores) and (not _is_polevaya(s)) and (not str(s).lower().endswith(u" юа")) and (d >= lim)
             for s, d in zip(df["store"], df["last_d"])]
-    return df[keep].sort_values("rev", ascending=False).head(n).reset_index(drop=True)
+    out = df[keep].sort_values("rev", ascending=False).head(n).reset_index(drop=True)
+    out.attrs["all_stores"] = [str(x) for x in df["store"]]       # все магазины оборота: сверка имён списка ЮА
+    return out
 
 
 def fetch_bc_sales(bcs, stores, days=SPLIT_DAYS_BC):
@@ -4090,6 +4138,12 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         top_n = SPLIT_TOP_N if auto_points else _clamp_top(top_n)       # auto_points: берём 10 сильнейших, нужное число отрежем ниже
         info["top_n"] = top_n
         alive = pick_top_shops(ua_stores, n=10 ** 6)                    # все живые точки не на ЮА: по ним ищем, где продаются кеги
+        miss = ua_stores_not_found(ua_store_names(dirs), alive.attrs.get("all_stores") or [])
+        if alive.attrs.get("all_stores") and miss:
+            info["notes"] = list(info.get("notes") or []) + [
+                u"Магазины из Справочник\\%s не найдены в обороте BigQuery за %d дн.: %s. Если магазин работает, имя в справочнике "
+                u"записано не так, как в BigQuery, и он НЕ исключён из получателей: исправьте имя и распределите заново"
+                % (UA_STORES_FILE, SPLIT_DAYS_SHOP, u"; ".join(miss))]
         me_ = _skey(shop)                                               # магазин-источник свой же товар не получает никогда
         if any(_skey(s_) == me_ for s_ in alive["store"]):
             alive = alive[[_skey(s_) != me_ for s_ in alive["store"]]].reset_index(drop=True)
@@ -5041,7 +5095,7 @@ def load_ua_map(dirs):
     yes, no = {}, set()
     try:
         if os.path.isfile(path):
-            df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+            df = read_ref_csv(path)
             for f, u, st in zip(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 4]):
                 kf, ku = bc_key(f), bc_key(u)
                 if not (kf and ku):
@@ -5059,7 +5113,7 @@ def save_ua_map(dirs, rows):
     """Дописывает решения (список dict по MAP_COLS) в Справочник\\vyvoz_ua_map.csv; одинаковая пара не дублируется, новое решение заменяет старое."""
     path = os.path.join(dirs.cache, UA_MAP_FILE)
     os.makedirs(dirs.cache, exist_ok=True)
-    old = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig") if os.path.isfile(path) else pd.DataFrame(columns=MAP_COLS)
+    old = read_ref_csv(path) if os.path.isfile(path) else pd.DataFrame(columns=MAP_COLS)
     old.columns = MAP_COLS[:len(old.columns)] if len(old.columns) <= len(MAP_COLS) else old.columns
     new = pd.DataFrame(rows, columns=MAP_COLS)
     allr = pd.concat([old, new], ignore_index=True)
@@ -5529,7 +5583,7 @@ def load_hidden_stores(dirs):
     try:
         if not os.path.isfile(path):
             return set()
-        df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        df = read_ref_csv(path)
         return set(x.strip() for x in df.iloc[:, 0] if x.strip()) if len(df.columns) else set()
     except Exception as e:
         R.check("WARN", u"Список убранных магазинов", u"не прочитан (%s): показываю все магазины" % e)
