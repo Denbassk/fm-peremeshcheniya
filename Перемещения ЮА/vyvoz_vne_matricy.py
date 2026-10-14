@@ -26,7 +26,7 @@
 Из BigQuery (с кэшем в Справочник\\): матрица assortment_matrix_full, barcode_recode_map,
 поставщик «каваапарат» (сырьё кофеаппарата), история поставок за 120 дней.
 РЕЗУЛЬТАТ: ВЫВОЗ\\<дата>\\<магазин>\\<магазин>.xlsx/.txt, _СВОДКА_ВЫВОЗ.xlsx.
-Запуск: окно (по умолчанию) или  vyvoz_vne_matricy.py --shops "А;Б" | --auto | --selftest
+Запуск: окно (по умолчанию) или  vyvoz_vne_matricy.py --shops "А;Б" | --auto | --selftest | --qt (новое окно PySide6)
 """
 
 import os
@@ -2815,6 +2815,7 @@ def _self_test_body(gui=False):
                     R.check("INFO", u"Окно в самотесте", u"не проверено: %s" % e_)
                 except Exception as e_:
                     ck(False, "окно run_app2 не собралось: %s: %s" % (type(e_).__name__, e_))
+            _selftest_qt_window(ck, d)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -3064,6 +3065,28 @@ def _selftest_sweep(ck):
            "правило «^слово» - начало названия по слову")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_qt_window(ck, d):
+    """Новое окно PySide6 (--qt): все экраны собираются и показываются. Нет PySide6 - проверка пропускается."""
+    try:
+        import PySide6  # noqa: F401
+    except ImportError:
+        R.check("INFO", u"Окно PySide6 в самотесте", u"не проверено: PySide6 не установлен")
+        return
+    if os.name != "nt" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")      # без экрана Qt завершает процесс, а не бросает исключение
+    try:
+        from PySide6.QtCore import QSettings
+        from vyvoz_gui import app as qt_app
+        keys = qt_app.run(sys.modules[__name__], dirs=d, test_mode=True,
+                          settings=QSettings(os.path.join(d.base, "ui_test.ini"), QSettings.IniFormat))
+        ck(set(keys) == {"vyvoz", "split", "upd", "fin", "serv", "log"}, "окно PySide6: экраны %s" % (keys,))
+        from vyvoz_gui import assets as qt_assets
+        fp_ = qt_assets.load_fonts()
+        ck(not fp_ and qt_assets.has_icons(), "окно PySide6: шрифты Inter и значки из assets\\fonts: %s" % (fp_,))
+    except Exception as e_:
+        ck(False, "окно PySide6 не собралось: %s: %s" % (type(e_).__name__, e_))
 
 
 def _selftest_gui_logic(ck):
@@ -5014,7 +5037,8 @@ def _split_shops(text):
 def _parse_args(argv):
     a = {"selftest": False, "auto": False, "shops": None, "no_ua": False, "offline": False, "rm": False,
          "excl": [], "incl": [], "split": None, "day": None, "top": None, "with_rc": False, "no_rc": False, "update": None,
-         "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False, "to_shop": None}
+         "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False, "to_shop": None,
+         "qt": False}
     it = iter(argv)
     for x in it:
         t = x.lower().lstrip("-/")
@@ -5062,6 +5086,8 @@ def _parse_args(argv):
                 print(u"--top: ожидается число 1..%d, получено «%s»" % (SPLIT_TOP_N, v))
         elif t in ("to-shop", "to_shop"):              # весь вывоз на один магазин (с оценкой продаж за 60 дн.)
             a["to_shop"] = next(it, "")
+        elif t == "qt":                                # новое окно PySide6 (перенос по экранам; без ключа - прежнее окно)
+            a["qt"] = True
         elif t == "day":                               # ГГГГ-ММ-ДД папки результата (по умолчанию из файла)
             a["day"] = next(it, "")
         elif t == "shops":
@@ -7558,6 +7584,12 @@ def main(argv=None):
                 ok_all = ok_all and bool(sp.get("ok"))
         return 0 if ok_all else 2
     if USE_GUI and not args["auto"] and args["shops"] is None:
+        if args["qt"]:
+            try:
+                from vyvoz_gui import app as qt_app
+                return qt_app.run(sys.modules[__name__])
+            except Exception as e:                     # нет PySide6 или окно не собралось - работаем в прежнем окне
+                print(u"Новое окно не открылось (%s: %s), открываю прежнее" % (type(e).__name__, e))
         try:
             return run_app2()
         except Exception as e:
