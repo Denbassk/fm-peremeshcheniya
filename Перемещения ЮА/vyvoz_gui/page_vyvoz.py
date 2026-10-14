@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QButtonGroup, QCheckBox, QHBoxLayout, QLabel, QMes
 from . import tokens as T
 from .app import Page
 from .suppliers import SuppliersDialog
-from .widgets import Banner, Card, RowsModel, StatusLine, button, fit_rows, help_button, muted, table
+from .widgets import Banner, Card, RowsModel, StatusLine, button, fit_rows, muted, table
 
 INPUT_HELP = (u"Нужен свежий файл в каждой обязательной папке. Склад ЮА - со ВСЕМИ строками, и нулевыми; приходы ЮА - "
               u"за весь период. Если в папке два файла (×2), берётся самый свежий. Старый или отсутствующий файл выгрузите "
@@ -67,12 +67,12 @@ class VyvozPage(Page):
         self.st_view.selectionModel().selectionChanged.connect(self.on_pick)
         c.lay.addWidget(self.st_view)
         row = QHBoxLayout()
-        self.pick_line = StatusLine()
-        row.addWidget(self.pick_line, 1)
-        row.addStretch(1)                                    # кнопки не растягиваются, когда строка-подсказка скрыта
         for b in (self.b_all, self.b_hide, self.b_show):
             row.addWidget(b)
+        row.addStretch(1)
         c.lay.addLayout(row)
+        self.pick_line = StatusLine()                        # на всю ширину карточки, а не столбиком рядом с кнопками
+        c.lay.addWidget(self.pick_line)
         self.hid_lbl = muted()
         c.lay.addWidget(self.hid_lbl)
         self.body.addWidget(c)
@@ -90,13 +90,8 @@ class VyvozPage(Page):
             row.addWidget(rb)
         row.addStretch(1)
         c.lay.addLayout(row)
-        row = QHBoxLayout()
-        self.mode_line = StatusLine()
-        row.addWidget(self.mode_line)
-        self.mode_help = help_button(u"", u"режим")                 # полное описание режима и список поставщиков - здесь
-        row.addWidget(self.mode_help, 0, Qt.AlignVCenter)
-        row.addStretch(1)
-        c.lay.addLayout(row)
+        self.mode_line = StatusLine(help=u"")                  # «?» сразу после строки: полное описание режима и поставщики
+        c.lay.addWidget(self.mode_line)
         self.rm_cb = QCheckBox(u"Вывозить и товар из матрицы, который на ЮА ещё не завозился")
         self.rm_cb.setChecked(True)
         c.lay.addWidget(self.rm_cb)
@@ -299,8 +294,7 @@ class VyvozPage(Page):
         t, lv = self.core.mode_description(m, n, self.rm_cb.isChecked())
         note = self.core.suppliers_note(m, n, when)
         self.mode_line.set(MODE_SHORT.get(m, u""), "WARN" if lv == "WARN" else "INFO")
-        self.mode_help.setToolTip(u"%s\n\n%s" % (t, note))
-        self.mode_help.setAccessibleDescription(u"%s %s" % (t, note))
+        self.mode_line.set_help(u"%s\n\n%s" % (t, note))
         self.b_sup.setToolTip(note)
         self.update_action()
 

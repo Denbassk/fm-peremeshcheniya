@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout, 
 from . import assets as A
 from . import tokens as T
 from . import theme as TH
-from .widgets import Card, Theme, button, help_button, muted, on_theme, repolish
+from .widgets import Card, Theme, button, help_button, on_theme, repolish
 from .worker import Worker
 
 # Меню по группам (решение владельца 14.10.2026): номеров нет, порядок - внутри группы «Сегодня»
@@ -76,18 +76,6 @@ class Page(QWidget):
         pass
 
 
-class Placeholder(Page):
-    """Экран, который ещё не перенесён: работает в прежнем окне."""
-
-    def __init__(self, key, core, win):
-        super().__init__(key, core, win)
-        c = Card(u"Этот раздел пока в прежнем окне")
-        c.lay.addWidget(muted(u"Перенос идёт по одному экрану. До переноса откройте программу без ключа --qt "
-                              u"(обычный ярлык): там раздел работает как раньше."))
-        self.body.addWidget(c)
-        self.finish()
-
-
 class JournalPage(Page):
     def __init__(self, core, win):
         super().__init__("log", core, win)
@@ -129,6 +117,20 @@ class ServicePage(Page):
         row.addStretch(1)
         self.theme_group.buttonClicked.connect(lambda b: win.themes.set_mode(b.property("mode")))
         c.lay.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(u"Шрифт:"))
+        self.font_group = QButtonGroup(self)
+        for mode, text in T.FONT_MODES:
+            rb = QRadioButton(text)
+            rb.setProperty("font", mode)
+            rb.setChecked(win.themes.font_mode == mode)
+            self.font_group.addButton(rb)
+            row.addWidget(rb)
+        row.addWidget(help_button(u"Сравните, какой шрифт на вашем экране чётче. Выбор запоминается. Какой шрифт окно "
+                                  u"рисует на самом деле, пишется в «Журнал» при запуске и при смене.", u"Шрифт"))
+        row.addStretch(1)
+        self.font_group.buttonClicked.connect(lambda b: self._set_font(b.property("font")))
+        c.lay.addLayout(row)
         self.body.addWidget(c)
 
         c = Card(u"Проверка программы", u"Самотест проверяет расчёты на тестовых данных; подробности - в «Журнале».")
@@ -166,6 +168,12 @@ class ServicePage(Page):
         self.body.addWidget(c)
         self.finish()
         self.d = d
+
+    def _set_font(self, mode):
+        self.win.themes.set_font(mode)
+        rep = self.win.themes.font_report()
+        self.win.journal(u"Шрифт", rep)
+        self.win.status(rep, "OK" if u"не загрузился" not in rep else "WARN")
 
     def _map_done(self, res, out):
         self.win.journal(u"Список соответствия ШК", self.core._map_text(res or {}))
@@ -313,11 +321,13 @@ class MainWindow(QMainWindow):
         right.addWidget(sb)
         h.addLayout(right, 1)
 
+        from .page_fin import FinPage
+        from .page_split import SplitPage
+        from .page_upd import UpdPage
         from .page_vyvoz import VyvozPage
         self.log = JournalPage(core, self)
-        self.pages = {"vyvoz": VyvozPage(core, self), "split": Placeholder("split", core, self),
-                      "upd": Placeholder("upd", core, self), "fin": Placeholder("fin", core, self),
-                      "serv": ServicePage(core, self), "log": self.log}
+        self.pages = {"vyvoz": VyvozPage(core, self), "split": SplitPage(core, self), "upd": UpdPage(core, self),
+                      "fin": FinPage(core, self), "serv": ServicePage(core, self), "log": self.log}
         for p in self.pages.values():
             self.stack.addWidget(p)
         for i, key in enumerate(("vyvoz", "split", "upd", "fin", "serv", "log"), 1):
@@ -385,7 +395,8 @@ def make_app(argv=None):
 
 
 def run(core, dirs=None, test_mode=False, settings=None):
-    """Открыть окно. test_mode: собрать все экраны, показать каждый и закрыть -> (ключи экранов, окно не показывается)."""
+    """Открыть окно. test_mode: собрать все экраны, показать каждый и закрыть (окно не показывается) ->
+    {"keys": экраны, "font": отчёт о шрифте, "targets": магазины «Всё на один магазин», "targets_want": split_targets}."""
     dirs = dirs or core.DIRS
     dirs.ensure()
     app, probs = make_app()
@@ -395,13 +406,17 @@ def run(core, dirs=None, test_mode=False, settings=None):
     win = MainWindow(core, dirs, themes)
     for p_ in probs:
         win.journal(u"Шрифты", p_)
+    win.journal(u"Шрифт", themes.font_report())             # что рисует окно на самом деле (QFontInfo), а не что запрошено
     if test_mode:
         for k in win.pages:
             win.show_page(k)
-        keys = sorted(win.pages)
+        sp = win.pages["split"]
+        res = {"keys": sorted(win.pages), "font": themes.font_report(),
+               "targets": [sp.one_cb.itemText(i) for i in range(sp.one_cb.count())],
+               "targets_want": core.split_targets(dirs, sp.chk["shop"] if sp.chk and sp.chk.get("ok") else None)}
         win.close()
         win.deleteLater()
-        return keys
+        return res
     win.resize(1180, 800)
     win.show()
     win.pages["vyvoz"].refresh()

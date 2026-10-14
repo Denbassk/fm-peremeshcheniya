@@ -98,21 +98,42 @@ class Card(QFrame):
         return w
 
 
-class StatusLine(QWidget):
-    """Значок + текст: состояние читается без цвета (уровни OK / WARN / ERR / INFO)."""
+class FitLabel(QLabel):
+    """Текст с переносом, который сначала занимает ширину одной строки: QLabel с переносом сам просит узкий столбик,
+    а этот - сколько нужно тексту в одну строку; не хватает места - переносится по ширине карточки."""
 
-    def __init__(self, text=u"", level="INFO", parent=None):
+    def sizeHint(self):
+        s = super().sizeHint()
+        return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 4, s.height())
+
+    def minimumSizeHint(self):
+        s = super().minimumSizeHint()
+        return QSize(min(self.sizeHint().width(), 12 * T.SPACING_MD), s.height())
+
+
+class StatusLine(QWidget):
+    """Значок + текст: состояние читается без цвета (уровни OK / WARN / ERR / INFO). help - «?» сразу после текста
+    (длинное пояснение во всплывающей подсказке, set_help меняет его)."""
+
+    def __init__(self, text=u"", level="INFO", parent=None, help=None):
         super().__init__(parent)
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(T.SPACING_SM)
         self.ic = QLabel()
         self.ic.setFixedSize(20, 20)
-        self.tx = QLabel()
+        self.tx = FitLabel() if help is not None else QLabel()
         self.tx.setWordWrap(True)
         self.tx.setTextInteractionFlags(Qt.TextSelectableByMouse)
         h.addWidget(self.ic, 0, Qt.AlignTop)
-        h.addWidget(self.tx, 1)
+        self.help = None
+        if help is None:
+            h.addWidget(self.tx, 1)
+        else:
+            self.help = help_button(help)
+            h.addWidget(self.tx)
+            h.addWidget(self.help, 0, Qt.AlignTop)
+            h.addStretch(1)
         self.level = level
         on_theme(self._paint)
         self.set(text, level)
@@ -124,8 +145,14 @@ class StatusLine(QWidget):
     def set(self, text, level="INFO"):
         self.level = level
         self.tx.setText(text)
+        self.tx.updateGeometry()
         self._paint()
         self.setVisible(bool(text))
+
+    def set_help(self, text):
+        if self.help is not None:
+            self.help.setToolTip(text)
+            self.help.setAccessibleDescription(text)
 
 
 class Banner(QFrame):
@@ -229,3 +256,47 @@ def fit_rows(view, min_rows=2, max_rows=8):
     n = max(min_rows, min(max_rows, view.model().rowCount()))
     h = view.horizontalHeader().sizeHint().height() + n * view.verticalHeader().defaultSectionSize() + 2 * view.frameWidth() + 4
     view.setFixedHeight(h)
+
+
+class ResultCard(Card):
+    """Итог действия: плашка (уровень + «Журнал»), таблица по строкам результата, кнопки открыть файл / папку.
+    Скрыта до первого запуска. on_log - открыть «Журнал»."""
+
+    def __init__(self, cols, status_col=None, stretch_col=None, on_log=None, title=u"Результат"):
+        super().__init__(title)
+        self.banner = Banner()
+        if on_log:
+            self.banner.action.connect(on_log)
+        self.lay.addWidget(self.banner)
+        self.model = RowsModel(cols, level_key="level" if status_col is not None else None, status_col=status_col)
+        self.view = table(self.model, stretch_col=stretch_col)
+        self.view.setAccessibleName(title)
+        self.lay.addWidget(self.view)
+        self.btns = QHBoxLayout()
+        self.btns.addStretch(1)
+        self.lay.addLayout(self.btns)
+        self.hide()
+
+    def add_button(self, b):
+        self.btns.insertWidget(self.btns.count() - 1, b)
+        return b
+
+    def show_result(self, rows, text, level, max_rows=8):
+        self.model.set_rows(rows)
+        fit_rows(self.view, 1, max_rows)
+        self.view.setVisible(bool(rows))
+        self.banner.show_msg(text, level, u"Открыть журнал" if level in ("ERR", "WARN") else u"Журнал")
+        self.show()
+
+
+def pick_files(parent, title, init, multi=False, pattern=u"Excel (*.xlsx *.xlsm *.xls);;Все файлы (*.*)"):
+    """Окно выбора файла(ов) -> список путей (пусто - отменили)."""
+    import os
+    from PySide6.QtWidgets import QFileDialog
+    init = init if init and os.path.isdir(init) else u""
+    if multi:
+        fps, _f = QFileDialog.getOpenFileNames(parent, title, init, pattern)
+    else:
+        fp, _f = QFileDialog.getOpenFileName(parent, title, init, pattern)
+        fps = [fp] if fp else []
+    return [os.path.normpath(x) for x in fps]

@@ -3,7 +3,7 @@ import os
 import sys
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontInfo, QIcon, QPainter, QPixmap
 
 from . import tokens as T
 
@@ -43,11 +43,30 @@ def load_fonts():
     return probs
 
 
-def ui_font(size_px=T.TYPO_BODY_MD[0], weight=400):
-    f = QFont(T.FONT if T.FONT in QFontDatabase.families() else "Segoe UI")
+def ui_font(size_px=T.TYPO_BODY_MD[0], weight=400, family=None):
+    """Шрифт окна. family - «Inter» или «Segoe UI»; нет Inter в базе шрифтов - Segoe UI. Полный хинтинг: на Windows при
+    масштабе 100-150 % буквы привязаны к пиксельной сетке и не расплываются."""
+    fam = family or T.FONT
+    if fam not in QFontDatabase.families():
+        fam = T.FONT_FALLBACK
+    f = QFont(fam)
     f.setPixelSize(size_px)
     f.setWeight(QFont.Weight(weight))
+    f.setHintingPreference(QFont.PreferFullHinting)
     return f
+
+
+HINTING = {QFont.PreferDefaultHinting: u"по умолчанию", QFont.PreferNoHinting: u"нет", QFont.PreferVerticalHinting: u"вертикальный",
+           QFont.PreferFullHinting: u"полный"}
+
+
+def font_report(font, wanted):
+    """Какой шрифт реально рисует окно (QFontInfo), а не какой запрошен -> строка для журнала."""
+    fi = QFontInfo(font)
+    ok = fi.family() == wanted
+    return u"Шрифт: выбран %s, фактически %s %d px, хинтинг %s%s" % (
+        wanted, fi.family(), fi.pixelSize(), HINTING.get(font.hintingPreference(), u"?"),
+        u"" if ok else u" - %s не загрузился, работает запасной" % wanted)
 
 
 def has_icons():
@@ -87,6 +106,27 @@ def check_png(color):
     p = os.path.join(tempfile.gettempdir(), "fm_vyvoz_check_%s.png" % color.lstrip("#"))
     if not os.path.isfile(p):
         glyph_pixmap("check", color, 16, 2.0).save(p, "PNG")
+    return p.replace("\\", "/")
+
+
+def arrow_png(color, up=False):
+    """Стрелка для QComboBox::down-arrow и кнопок QSpinBox: рисуется линией, шрифт значков не нужен."""
+    import tempfile
+    from PySide6.QtGui import QPen
+    p = os.path.join(tempfile.gettempdir(), "fm_vyvoz_arrow_%s_%s.png" % ("up" if up else "dn", color.lstrip("#")))
+    if not os.path.isfile(p):
+        px = QPixmap(24, 24)
+        px.fill(Qt.transparent)
+        g = QPainter(px)
+        g.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(color), 2.6)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        g.setPen(pen)
+        y0, y1 = (15, 9) if up else (9, 15)
+        g.drawPolyline([QPointF(6, y0), QPointF(12, y1), QPointF(18, y0)])
+        g.end()
+        px.save(p, "PNG")
     return p.replace("\\", "/")
 
 
