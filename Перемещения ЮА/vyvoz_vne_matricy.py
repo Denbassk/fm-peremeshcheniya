@@ -1961,6 +1961,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
         os.makedirs(shop_dir, exist_ok=True)
         write_store_book(os.path.join(shop_dir, nm + ".xlsx"), shop, day, res, st,
                          mode_note=(u"     РЕЖИМ: ЗАЧИСТКА ОСТАТКА" if sweep else u""))
+        entry["list"] = os.path.join(shop_dir, nm + ".xlsx")             # окну не нужно собирать путь самому
         if sweep:
             try:
                 with open(os.path.join(shop_dir, u"ЧИТАЙ_МЕНЯ.txt"), "w", encoding="utf-8") as f_:
@@ -2014,7 +2015,8 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
                       "vyvoz_units": e["stats"]["vyvoz_units"], "vyvoz_sum": e["stats"]["vyvoz_sum"],
                       "check1": e["stats"]["counts"]["CHECK1"], "check2": e["stats"]["counts"]["CHECK2"],
                       "excl": e["stats"]["counts"]["EXCL"], "inv_pos": e["stats"]["inv_pos"], "inv_sum": e["stats"]["inv_sum"],
-                      "wait_pos": e["stats"]["wait_pos"], "kul_pos": e["stats"]["kul_pos"], "folder": e["folder"]} for e in entries]
+                      "wait_pos": e["stats"]["wait_pos"], "kul_pos": e["stats"]["kul_pos"], "folder": e["folder"],
+                      "list": e.get("list", u"")} for e in entries]
     cand = all_res[(all_res["verdict"] == "VYVOZ") | all_res["reason"].str.startswith(u"поставщик исключён")]
     info["suppliers"] = [{"supplier": sp, "pos": len(g), "sum": round(float(g["sum"].sum()), 2)}
                          for sp, g in cand.groupby(cand["supplier"].replace("", u"(поставщик не указан)"))]
@@ -2645,6 +2647,8 @@ def _self_test_body(gui=False):
         ck(os.path.isfile(os.path.join(p1, "Тест 1.xlsx")) and os.path.isfile(os.path.join(p1, "Тест 1.txt")),
            "файлы магазина созданы")
         ck(not os.path.exists(os.path.join(out["day_dir"], "Тест 2", "Тест 2.txt")), "по магазину с ОШИБ txt не пишется")
+        ck(os.path.normcase(shops["Тест 1"].get("list", u"")) == os.path.normcase(os.path.join(p1, "Тест 1.xlsx")),
+           "run_vyvoz: путь листа магазина в результате (окну не нужно собирать его само): %s" % shops["Тест 1"].get("list"))
         ck(os.path.isfile(os.path.join(out["day_dir"], SUMMARY_NAME)), "сводка создана")
         with open(os.path.join(p1, "Тест 1.txt"), "rb") as f:
             blob = f.read()
@@ -2776,6 +2780,7 @@ def _self_test_body(gui=False):
         ck(st_.get("stock_pos") == st_.get("inv_pos", 0) + st_.get("out_pos", 0) and st_.get("nocard_pos", 0) >= 2,
            "финал: баланс остатка и список «нет карточки на ЮА»: %s" % st_)
         ck(os.path.isfile(os.path.join(fin_["out_dir"], "Тест 1_инвентаризация_ЮА.xlsx")), "финал: xlsx со сверкой создан")
+        ck(fin_.get("xlsx") == os.path.join(fin_["out_dir"], "Тест 1_инвентаризация_ЮА.xlsx"), "финал: путь xlsx в результате: %s" % fin_.get("xlsx"))
         ck(not run_final_inventory(d, "Нет такого", ref=ref2)["ok"], "финал: неизвестный магазин -> ошибка, а не пустой файл")
         fr_ = final_inventory_rows(pd.DataFrame({"verdict": ["IN", "VYVOZ", "CHECK1", "CHECK2", "EXCL", "KUL", "PACK"]}))
         ck(len(fr_) == 5, "final_inventory_rows: все, кроме кулинарии и штучных: %d" % len(fr_))
@@ -2867,6 +2872,7 @@ def _self_test_body(gui=False):
     _selftest_manual_rules(ck)
     _selftest_sweep(ck)
     _selftest_window(ck)
+    _selftest_gui_logic(ck)
     _selftest_map(ck)
     _selftest_ua_base(ck)
 
@@ -3056,6 +3062,86 @@ def _selftest_sweep(ck):
         d2 = pd.DataFrame({"u": [1]})
         ck(_sweep_name_hit(u"комо сир", {"name": [u"^комо"]}) == u"комо" and not _sweep_name_hit(u"комодо сир", {"name": [u"^комо"]}),
            "правило «^слово» - начало названия по слову")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_gui_logic(ck):
+    """Логика окна, вынесенная из GUI (PR 1 переноса на PySide6): вывод по потокам, режимы, проверки листа, магазины, числа."""
+    # L1: вывод фоновой задачи не смешивается с выводом других потоков и не уходит из sys.stdout
+    seen, go, done = {}, threading.Event(), threading.Event()
+
+    def chatty():
+        go.wait(5)                                  # главный поток печатает, пока задача идёт
+        print(u"ЗАДАЧА-строка")
+        done.set()
+        return 42
+    main_buf, prev = io.StringIO(), sys.stdout
+    try:
+        sys.stdout = main_buf                       # «консоль» окна; run_captured обернёт её сам
+        th = threading.Thread(target=lambda: seen.update(run_captured(chatty)), daemon=True)
+        th.start()
+        print(u"ГЛАВНЫЙ-строка")
+        go.set()
+        done.wait(5)
+        th.join(5)
+    finally:
+        sys.stdout = prev
+    ck(seen.get("res") == 42 and u"ЗАДАЧА-строка" in seen.get("out", u"") and u"ГЛАВНЫЙ" not in seen.get("out", u"")
+       and u"ГЛАВНЫЙ-строка" in main_buf.getvalue() and u"ЗАДАЧА" not in main_buf.getvalue(),
+       "run_captured: вывод задачи - в её журнал, чужой - нет: задача %r, главный %r" % (seen.get("out"), main_buf.getvalue()))
+    e_ = run_captured(lambda: 1 / 0)
+    ck("res" not in e_ and e_.get("err", u"").startswith("ZeroDivisionError"), "run_captured: ошибка задачи -> err: %s" % e_)
+    # L2: режимы
+    ck(vyvoz_mode_flags("manual") == {"manual": True, "sweep": False} and vyvoz_mode_flags("sweep") == {"manual": False, "sweep": True}
+       and vyvoz_mode_flags("normal") == {"manual": False, "sweep": False}, "режим -> флаги run_vyvoz")
+    t_, lv_ = mode_description("sweep", 7, rm=True)
+    ck(lv_ == "WARN" and u"ЮА ещё не завозился" not in t_, "зачистка: rm не упоминается: %s" % t_)
+    t_, lv_ = mode_description("manual", 7, rm=True)
+    ck(lv_ == "OK" and u"7 поставщиков" in t_ and t_.endswith(u"ещё не завозился."), "ручной выбор: текст и уровень: %s" % t_)
+    ck(mode_description("normal", 3, rm=False) == (u"Не вывозим сигареты, кеги, расходники, кулинарию, список ШК и 3 поставщиков из списка.", "INFO"),
+       "обычный режим без rm")
+    ck(u"не действует" in suppliers_note("sweep", 5, u"") and u"(список сохранён -)" in suppliers_note("normal", 5, u""),
+       "строка про поставщиков")
+    # L9: числа
+    ck(fmt_money(1234567.891) == u"1 234 568" and fmt_money(1234.5, 2) == u"1 234.50" and fmt_money(None) == u"0"
+       and fmt_qty(2) == u"2.000", "fmt_money / fmt_qty")
+    tmp = tempfile.mkdtemp(prefix="vyvoz_gl_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        # L5: автоматический лист
+        ck(is_auto_list(d, os.path.join(d.out, u"2026-10-08", u"Тест", u"Тест.xlsx")) and not is_auto_list(d, os.path.join(tmp, CORR_DIR, u"x.xlsx"))
+           and not is_auto_list(d, d.out + u"_копия" + os.sep + u"x.xlsx"), "is_auto_list: только внутри ВЫВОЗ")
+        # L6: проверка листа для распределения
+        corr = os.path.join(tmp, CORR_DIR, u"Тест_лист.xlsx")
+        _write_vyvoz_list_xlsx(corr, u"Байрона 138/1", u"08.10.2026", [(_ean("482100600011"), u"Товар", 3, u"шт", 5.0, u"Пост")])
+        v1, v2 = validate_split_input(d, u""), validate_split_input(d, corr)
+        ck(not v1["ok"] and v1["level"] == "info" and v2["ok"] and v2["chk"]["shop"] == u"Байрона 138/1",
+           "validate_split_input: пусто -> подсказка; лист из Корректировка_ЮА -> ok: %s / %s" % (v1, v2.get("text")))
+        alien = os.path.join(d.out, u"Тест_лист.xlsx")
+        shutil.copyfile(corr, alien)
+        v3 = validate_split_input(d, alien)
+        ck(not v3["ok"] and v3["level"] == "warn" and CORR_DIR in v3["text"], "validate_split_input: лист не из Корректировка_ЮА: %s" % v3)
+        # L7: магазины для «весь вывоз на один магазин»
+        ua_ = load_ua_stores(d)
+        all_ = set(x for v_ in rz.ROUTES.values() for x in v_)
+        any_ = split_targets(d)
+        src_ = any_[0] if any_ else u""
+        tg_ = split_targets(d, src_)
+        ck(tg_ and src_ not in tg_ and not any(_is_polevaya(x) or _skey(x) in ua_ for x in any_) and set(any_) <= all_
+           and len(any_) == len(tg_) + 1 and u"Байрона 138/1" not in any_,
+           "split_targets: без источника, Полевой и магазинов ЮА: %d из %d" % (len(tg_), len(all_)))
+        # L10: сохранение выбора поставщиков
+        kn_ = {sup_norm(u"Альфа"): {"name": u"Альфа"}, sup_norm(u"Бета"): {"name": u"Бета"}}
+        ck(save_supplier_choice(d, kn_, [sup_norm(u"Бета"), u"нет такого"]) == 1 and set(load_excluded_suppliers(d).values()) == {u"Бета"},
+           "save_supplier_choice: в файле только отмеченные")
+        # L4: «Перечитать» без Полевой, замечания чтения
+        sc_ = scan_inputs(d)
+        ck(sc_["found"] == {} and isinstance(sc_["inputs"], list) and sc_["inputs"] and isinstance(sc_["errors"], list),
+           "scan_inputs: пустая папка -> пусто, строки «Шаг 1» есть")
+        # L11: тексты разделов
+        ck(set(UI_PAGES) == {"vyvoz", "split", "upd", "fin", "serv", "log"} and all(len(v_) == 2 for v_ in UI_PAGES.values()), "UI_PAGES")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -3251,6 +3337,7 @@ def _selftest_split_one(ck):
         e_ = info.get("eff") or {}
         ck(abs(e_.get("share", 0) - 100.0 / 263.0) < 1e-6 and e_.get("place") == 1 and e_.get("of") == 3,
            "оценка продаж за 60 дн.: доля %s, место %s из %s" % (e_.get("share"), e_.get("place"), e_.get("of")))
+        ck(info.get("xlsx") == os.path.join(info["out_dir"], u"Распределение.xlsx"), "распределение: путь xlsx в результате: %s" % info.get("xlsx"))
         wb_ = load_workbook(os.path.join(info["out_dir"], u"Распределение.xlsx"), read_only=True)
         ck(u"Оценка продаж %d дн" % EFF_DAYS in wb_.sheetnames and u"Сравнение магазинов" in wb_.sheetnames,
            "всё на один магазин: листы оценки: %s" % wb_.sheetnames)
@@ -3802,10 +3889,9 @@ def open_suppliers_dialog(root, dirs, info=None, test_mode=False, on_save=None, 
     ttk.Label(bt, text=u"Кнопки действуют на видимых (с учётом поиска)", foreground=MUT).pack(side="left")
 
     def save():
-        rules = {n: known[n]["name"] for n in on if on[n].get()}
-        save_excluded_suppliers(dirs, rules)
+        n_ = save_supplier_choice(dirs, known, [n for n in on if on[n].get()])
         if on_save:
-            on_save(len(rules))
+            on_save(n_)
         win.destroy()
     ttk.Button(bt, text=u"Отмена", command=win.destroy).pack(side="right")
     ttk.Button(bt, text=u"Сохранить", style=acc, command=save).pack(side="right", padx=(0, px(8)))
@@ -4887,11 +4973,13 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     try:
         wb.save(xp)
         files.append(xp)
+        info["xlsx"] = xp
     except PermissionError:                               # файл открыт в Excel: сводку пишем под новым именем, а не теряем
         xp2 = os.path.join(out_dir, u"Распределение_%s.xlsx" % datetime.now().strftime("%H%M%S"))
         try:
             wb.save(xp2)
             files.append(xp2)
+            info["xlsx"] = xp2
             info["notes"] = list(info.get("notes") or []) + [u"Распределение.xlsx открыт в Excel: актуальная сводка записана в %s" % os.path.basename(xp2)]
         except PermissionError:
             info["problems"].append(u"Распределение.xlsx занят (закройте в Excel): txt записаны, xlsx нет")
@@ -6140,6 +6228,7 @@ def run_final_inventory(dirs, shop, state_path=None, ref=None, use_ua=True, day=
     try:
         wb.save(xp)
         info["files"].append(xp)
+        info["xlsx"] = xp
     except PermissionError:
         info["problems"].append(u"%s занят (закройте в Excel): txt записан, xlsx нет" % os.path.basename(xp))
     info["stats"] = {"stock_pos": len(res), "stock_units": tot_q, "stock_sum": tot_s,
@@ -6398,11 +6487,159 @@ def copy_list_as_is(dirs, src):
     return dst
 
 
+# ==================== ЛОГИКА ОКНА БЕЗ GUI ====================
+# Всё, что окно решает само (режим, проверки, пути, тексты), - здесь, без tkinter и Qt: этим же пользуется окно PySide6.
+
+class _ThreadStdout(object):
+    """sys.stdout, который раскладывает вывод по потокам: у потока есть свой буфер - пишет в него, нет - в прежний stdout.
+    Замена contextlib.redirect_stdout: тот подменяет stdout для ВСЕХ потоков, и в журнал задачи попадал чужой вывод,
+    а то, что задача печатала после выхода другого redirect, терялось."""
+
+    def __init__(self, base):
+        self.base = base
+        self.bufs = {}
+
+    def write(self, s):
+        b = self.bufs.get(threading.get_ident())
+        if b is not None:
+            return b.write(s)
+        if self.base is not None:
+            return self.base.write(s)
+        return len(s)
+
+    def flush(self):
+        try:
+            if self.base is not None:
+                self.base.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+
+_OUT_LOCK = threading.Lock()
+
+
+def run_captured(fn):
+    """Выполнить fn в текущем потоке и собрать то, что напечатал именно этот поток.
+    -> {"res": результат} или {"err": "Тип: текст"}, плюс "out": напечатанное."""
+    with _OUT_LOCK:
+        if not isinstance(sys.stdout, _ThreadStdout):
+            sys.stdout = _ThreadStdout(sys.stdout)
+        tee = sys.stdout
+    tid, buf, box = threading.get_ident(), io.StringIO(), {}
+    tee.bufs[tid] = buf
+    try:
+        box["res"] = fn()
+    except Exception as e:
+        box["err"] = u"%s: %s" % (type(e).__name__, e)
+    finally:
+        tee.bufs.pop(tid, None)
+    box["out"] = buf.getvalue()
+    return box
+
+
+VYVOZ_MODES = (("normal", u"Обычный"), ("manual", u"Ручной выбор"), ("sweep", u"Зачистка остатка"))
+
+
+def vyvoz_mode_flags(mode):
+    """Режим окна -> параметры run_vyvoz: {"manual", "sweep"}."""
+    return {"manual": mode == "manual", "sweep": mode == "sweep"}
+
+
+def mode_description(mode, n_sup, rm=True):
+    """Что вывозим в режиме -> (текст, уровень OK / WARN / INFO). rm - «вывозить и товар матрицы, не завозившийся на ЮА»."""
+    if mode == "sweep":
+        return u"Вывозим всё, кроме заморозки, скоропортов и расходников. Матрица, ЮА и список поставщиков не учитываются.", "WARN"
+    if mode == "manual":
+        t_, lv = (u"Сигареты и кеги тоже попадут в список (причина - в последней колонке листа), лишнее удалите в Excel. Не вывозим: %d "
+                  u"поставщиков с галочкой, список ШК, пакеты, расходники, сырьё кофе, овощи, кулинарию и выпечку." % n_sup), "OK"
+    else:
+        t_, lv = u"Не вывозим сигареты, кеги, расходники, кулинарию, список ШК и %d поставщиков из списка." % n_sup, "INFO"
+    if rm:
+        t_ += u" Вывозим и товар из матрицы, который на ЮА ещё не завозился."
+    return t_, lv
+
+
+def suppliers_note(mode, n_sup, when):
+    """Строка про список «не вывозить» под кнопкой «Поставщики»."""
+    if mode == "sweep":
+        return u"В зачистке список поставщиков не действует."
+    if mode == "manual":
+        return u"Не вывозим поставщиков: %d (список сохранён %s). Галочки действуют и в ручном выборе." % (n_sup, when or u"-")
+    return u"Не вывозим поставщиков: %d (список сохранён %s)." % (n_sup, when or u"-")
+
+
+def scan_inputs(dirs):
+    """Кнопка «Перечитать»: магазины (без Полевой), строки таблицы «Шаг 1» и замечания при чтении.
+    -> {"found": {магазин: (файл, df)}, "inputs": [...], "errors": ["[ОШИБ] имя: текст", ...]}"""
+    reset_report()
+    found = scan_stores(dirs)
+    inputs = input_status(dirs)
+    return {"found": {x: found[x] for x in sorted(found) if not _is_polevaya(x)}, "inputs": inputs,
+            "errors": [u"[%s] %s: %s" % (VERDICT_LABEL[a], b, c_) for a, b, c_ in R.checks if a in ("ERROR", "WARN")]}
+
+
+def is_auto_list(dirs, path):
+    """Лист лежит в ВЫВОЗ\\... - это автоматический список, а не исправленный вручную (тот - в Корректировка_ЮА)."""
+    try:
+        return os.path.normcase(os.path.abspath(path)).startswith(os.path.normcase(os.path.abspath(dirs.out)) + os.sep)
+    except Exception:
+        return False
+
+
+def validate_split_input(dirs, path):
+    """Можно ли распределять этот лист. -> {"ok", "text", "level": "info" | "warn", "chk": corrected_check или None}"""
+    path = (path or u"").strip()
+    if not path or not os.path.isfile(path):
+        return {"ok": False, "level": "info", "chk": None,
+                "text": u"Выберите лист из папки «%s» или возьмите автоматический список («Взять без правок»)." % CORR_DIR}
+    if not is_in_corr(dirs, path):
+        return {"ok": False, "level": "warn", "chk": None, "text": u"Распределение берёт листы только из папки «%s»." % CORR_DIR}
+    chk = corrected_check(path)
+    if not chk["ok"]:
+        return {"ok": False, "level": "warn", "chk": chk, "text": chk["text"]}
+    return {"ok": True, "level": "", "chk": chk, "text": chk["text"]}
+
+
+def split_targets(dirs, source=None):
+    """Магазины для «весь вывоз на один магазин»: торговые точки из маршрутов без Полевой, без магазинов ЮА
+    (Справочник\\vyvoz_ua_stores.csv) и без самого источника. Работает ли точка (продажи в BigQuery), проверяет run_split."""
+    ua, me_ = load_ua_stores(dirs), _skey(source) if source else None
+    names = set(x for v_ in rz.ROUTES.values() for x in v_)
+    return sorted(x for x in names if not _is_polevaya(x) and _skey(x) not in ua and _skey(x) != me_)
+
+
+def fmt_money(x, nd=0):
+    """12345.6 -> «12 346» (nd=0) или «12 345.60» (nd=2): пробел между разрядами, как в окне."""
+    return u"{:,.{}f}".format(float(x or 0), nd).replace(",", u" ")
+
+
+def fmt_qty(x):
+    return u"%.3f" % float(x or 0)
+
+
+def save_supplier_choice(dirs, known, keys):
+    """Окно «Поставщики»: keys - отмеченные (не вывозим) ключи sup_norm из known_suppliers. Пишет vyvoz_suppliers.csv -> сколько."""
+    rules = {n: known[n]["name"] for n in keys if n in known}
+    save_excluded_suppliers(dirs, rules)
+    return len(rules)
+
+
+UI_PAGES = {                    # заголовок и пояснение каждого раздела окна
+    "vyvoz": (u"Списки вывоза", u"Что делает: по остатку магазина составляет список товара, который нужно вывезти на Полевая-Склад (лист для печати и файл для ТСД). Порядок: 1) положите свежие выгрузки; 2) проверьте магазин; 3) нажмите «Сформировать списки вывоза»; 4) откройте список в Excel, удалите лишнее и сохраните в «Корректировка_ЮА»."),
+    "split": (u"Распределение по точкам", u"Что делает: делит список вывоза на файлы для ТСД по адресам: товар РЦ - на «Полевая-Склад», прямые поставки - на самые сильные торговые точки. Список берётся ТОЛЬКО из папки «Корректировка_ЮА»: правили его в Excel - сохраните туда; правок нет - нажмите «Взять без правок». На следующий день сюда не возвращайтесь - используйте «Подчистка списка»."),
+    "upd": (u"Подчистка списка", u"Что делает: убирает из вашего списка и из готовых файлов ТСД товар, который уже пришёл на ЮА (стал ЮА-шным) - его вывозить не нужно. Берётся ваш исправленный лист и готовые файлы; они не меняются. Очищенные копии лежат в папке Обновление_<дата> - в ТСД берите файлы оттуда."),
+    "fin": (u"Инвентаризация ЮА (финал)", u"Выгрузку Family снимайте ПОСЛЕ проведения вывоза. Всё, что осталось на полке, кроме кулинарии и штучных, идёт в файл инвентаризации ЮА с теми ШК, которые знает ЮА. Ваши правки списка вывоза здесь не нужны: файл строится по факту остатка."),
+    "serv": (u"Сервис", u"Проверка программы и быстрый доступ к папкам."),
+    "log": (u"Журнал", u"Подробный отчёт по всем действиям за сеанс."),
+}
+
+
 def run_app2(dirs=None, test_mode=False):
     """Окно: боковое меню + разделы (_ui_v2). test_mode: собрать все страницы и закрыть (для самотеста)."""
     dirs = dirs or DIRS
-    import io as _io
-    import contextlib
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
     if sys.stdout is None:
@@ -6481,14 +6718,7 @@ def run_app2(dirs=None, test_mode=False):
         dot.config(foreground=color)
 
     pages, nav, cur, on_show = {}, {}, {"p": None}, {}
-    TITLES = {
-        "vyvoz": (u"Списки вывоза", u"Что делает: по остатку магазина составляет список товара, который нужно вывезти на Полевая-Склад (лист для печати и файл для ТСД). Порядок: 1) положите свежие выгрузки; 2) проверьте магазин; 3) нажмите «Сформировать списки вывоза»; 4) откройте список в Excel, удалите лишнее и сохраните в «Корректировка_ЮА»."),
-        "split": (u"Распределение по точкам", u"Что делает: делит список вывоза на файлы для ТСД по адресам: товар РЦ - на «Полевая-Склад», прямые поставки - на самые сильные торговые точки. Список берётся ТОЛЬКО из папки «Корректировка_ЮА»: правили его в Excel - сохраните туда; правок нет - нажмите «Взять без правок». На следующий день сюда не возвращайтесь - используйте «Подчистка списка»."),
-        "upd": (u"Подчистка списка", u"Что делает: убирает из вашего списка и из готовых файлов ТСД товар, который уже пришёл на ЮА (стал ЮА-шным) - его вывозить не нужно. Берётся ваш исправленный лист и готовые файлы; они не меняются. Очищенные копии лежат в папке Обновление_<дата> - в ТСД берите файлы оттуда."),
-        "fin": (u"Инвентаризация ЮА (финал)", u"Выгрузку Family снимайте ПОСЛЕ проведения вывоза. Всё, что осталось на полке, кроме кулинарии и штучных, идёт в файл инвентаризации ЮА с теми ШК, которые знает ЮА. Ваши правки списка вывоза здесь не нужны: файл строится по факту остатка."),
-        "serv": (u"Сервис", u"Проверка программы и быстрый доступ к папкам."),
-        "log": (u"Журнал", u"Подробный отчёт по всем действиям за сеанс."),
-    }
+    TITLES = UI_PAGES
 
     def show(key):
         if cur["p"]:
@@ -6579,13 +6809,7 @@ def run_app2(dirs=None, test_mode=False):
         box = {}
 
         def work():
-            buf = _io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buf):
-                    box["res"] = fn()
-            except Exception as e:
-                box["err"] = u"%s: %s" % (type(e).__name__, e)
-            box["out"] = buf.getvalue()
+            box.update(run_captured(fn))          # вывод только этого потока, sys.stdout для остальных не подменяется
 
         th = threading.Thread(target=work, daemon=True)
         th.start()
@@ -6784,10 +7008,10 @@ def run_app2(dirs=None, test_mode=False):
     sweep_var = tk.BooleanVar(value=False)
 
     def on_mode(*_):
-        m_ = mode_var.get()
-        manual_var.set(m_ == "manual")
-        sweep_var.set(m_ == "sweep")
-    for val_, txt_ in (("normal", u"Обычный"), ("manual", u"Ручной выбор"), ("sweep", u"Зачистка остатка")):
+        fl_ = vyvoz_mode_flags(mode_var.get())
+        manual_var.set(fl_["manual"])
+        sweep_var.set(fl_["sweep"])
+    for val_, txt_ in VYVOZ_MODES:
         ttk.Radiobutton(rmode, text=txt_, value=val_, variable=mode_var, command=on_mode).pack(side="left", padx=(px(14), 0))
     mrow = ttk.Frame(ra)
     mrow.pack(fill="x", pady=(px(4), 0), after=rmode)
@@ -6807,28 +7031,17 @@ def run_app2(dirs=None, test_mode=False):
     sup_lbl = wrap_label(opts, u"")
     sup_lbl.pack(fill="x", pady=(px(4), 0))
 
+    def cur_mode():
+        return "sweep" if sweep_var.get() else "manual" if manual_var.get() else "normal"
+
     def sup_refresh():
         n_, when_, _p = suppliers_file_info(dirs)
-        if sweep_var.get():
-            t_ = u"В зачистке список поставщиков не действует."
-        elif manual_var.get():
-            t_ = u"Не вывозим поставщиков: %d (список сохранён %s). Галочки действуют и в ручном выборе." % (n_, when_ or u"-")
-        else:
-            t_ = u"Не вывозим поставщиков: %d (список сохранён %s)." % (n_, when_ or u"-")
-        sup_lbl.config(text=t_)
+        sup_lbl.config(text=suppliers_note(cur_mode(), n_, when_))
 
     def mode_refresh(*_):
         n_, when_, _p = suppliers_file_info(dirs)
-        if sweep_var.get():
-            t_, col_ = u"Вывозим всё, кроме заморозки, скоропортов и расходников. Матрица, ЮА и список поставщиков не учитываются.", AMB
-        elif manual_var.get():
-            t_, col_ = (u"Сигареты и кеги тоже попадут в список (причина - в последней колонке листа), лишнее удалите в Excel. Не вывозим: %d поставщиков "
-                        u"с галочкой, список ШК, пакеты, расходники, сырьё кофе, овощи, кулинарию и выпечку." % n_), GRN
-        else:
-            t_, col_ = (u"Не вывозим сигареты, кеги, расходники, кулинарию, список ШК и %d поставщиков из списка." % n_), MUT
-        if rm_var.get() and not sweep_var.get():
-            t_ += u" Вывозим и товар из матрицы, который на ЮА ещё не завозился."
-        mode_lbl.config(text=t_, foreground=col_)
+        t_, lv_ = mode_description(cur_mode(), n_, bool(rm_var.get()))
+        mode_lbl.config(text=t_, foreground={"OK": GRN, "WARN": AMB}.get(lv_, MUT))
         sup_refresh()
 
     def sup_saved(n):
@@ -6855,21 +7068,17 @@ def run_app2(dirs=None, test_mode=False):
                       ("c1", u"Проверить 1", 95, "e"), ("c2", u"Проверить 2", 95, "e"), ("status", u"Статус", 200, "w")), 3, expand=False)
 
     def refresh():
-        def job():
-            reset_report()
-            return scan_stores(dirs), input_status(dirs)
-
         def done(res, out):
-            found, inputs = res or ({}, [])
-            st["found"] = {x: found[x] for x in sorted(found) if not _is_polevaya(x)}
+            res = res or {}
+            st["found"] = res.get("found") or {}
             fin_cb.config(values=list(st["found"]))
-            fill_inputs(inputs)
+            fill_inputs(res.get("inputs") or [])
             render_stores(keep=list(tv1.selection()))
-            errs = [u"[%s] %s: %s" % (VERDICT_LABEL[a], b, c_) for a, b, c_ in R.checks if a in ("ERROR", "WARN")]
+            errs = res.get("errors") or []
             status(u"Магазинов найдено: %d" % len(st["found"]) if st["found"] else u"В ВХОД_ВЫВОЗ\\МАГАЗИНЫ нет выгрузок", GRN if st["found"] else AMB)
             if errs:
                 journal(u"Поиск выгрузок", u"\n".join(errs))
-        run_bg(u"Поиск выгрузок магазинов", job, done)
+        run_bg(u"Поиск выгрузок магазинов", lambda: scan_inputs(dirs), done)
 
     def go():
         shops = list(tv1.selection())
@@ -6879,15 +7088,15 @@ def run_app2(dirs=None, test_mode=False):
         if len(shops) > 1 and not messagebox.askyesno(u"Списки вывоза", u"Выбрано магазинов: %d (%s).\n\nФормировать списки по всем?"
                                                       % (len(shops), u"; ".join(shops)), parent=app, default="no"):
             return
-        rm, sw, mn = bool(rm_var.get()), bool(sweep_var.get()), bool(manual_var.get())
+        fl_ = vyvoz_mode_flags(cur_mode())
+        rm, sw, mn = bool(rm_var.get()), fl_["sweep"], fl_["manual"]
         mode_refresh()
 
         def done(info, out):
             st["info"] = info or {}
             tv1r.delete(*tv1r.get_children())
             for sh in st["info"].get("shops", []):
-                tv1r.insert("", "end", values=(sh.get("shop", u""), sh.get("vyvoz_pos", u""),
-                                               u"{:,.0f}".format(float(sh.get("vyvoz_sum", 0) or 0)).replace(",", u" "),
+                tv1r.insert("", "end", values=(sh.get("shop", u""), sh.get("vyvoz_pos", u""), fmt_money(sh.get("vyvoz_sum", 0)),
                                                sh.get("check1", u""), sh.get("check2", u""), sh.get("status", u"")))
             journal(u"Списки вывоза", _result_text(st["info"]))
             ne = sum(1 for a, _, _ in R.checks if a == "ERROR")
@@ -6895,15 +7104,7 @@ def run_app2(dirs=None, test_mode=False):
                          foreground=RED if ne else MUT)
             if st["info"].get("shops"):
                 note1.config(text=note1.cget("text") + u" · дальше: исправьте лист в Excel и сохраните в «%s», либо во вкладке «Распределение» нажмите «Взять без правок»" % CORR_DIR)
-            dd = st["info"].get("day_dir")
-            names = [x.get("shop", u"") for x in st["info"].get("shops", [])]
-            sel_fp = None
-            if dd and names:
-                for nm in (names[0], rz.safe_name(names[0])):
-                    fp = os.path.join(dd, nm, nm + u".xlsx")
-                    if os.path.isfile(fp):
-                        sel_fp = fp
-                        break
+            sel_fp = next((x["list"] for x in st["info"].get("shops", []) if x.get("list") and os.path.isfile(x["list"])), None)
             refresh_auto(select=sel_fp)
             app.after(150, lambda: cv1.yview_moveto(1.0))
         run_bg(u"Формирование списков вывоза", lambda: run_vyvoz(dirs, shops=shops, remove_not_on_ua=rm, sweep=sw, manual=mn), done)
@@ -6925,11 +7126,7 @@ def run_app2(dirs=None, test_mode=False):
 
     def raw_list_ok(fp, what):
         """Автоматический лист из ВЫВОЗ\\<дата>\\<магазин> - не тот, что вы исправляли: без подтверждения по нему не работаем."""
-        try:
-            inside = os.path.normcase(os.path.abspath(fp)).startswith(os.path.normcase(os.path.abspath(dirs.out)) + os.sep)
-        except Exception:
-            inside = False
-        return (not inside) or messagebox.askyesno(
+        return (not is_auto_list(dirs, fp)) or messagebox.askyesno(
             what, u"Это автоматический лист из папки ВЫВОЗ, а не исправленный вами (он лежит в «%s»).\n\n"
                   u"Продолжить именно с ним?" % CORR_DIR, parent=app, default="no")
 
@@ -6958,14 +7155,23 @@ def run_app2(dirs=None, test_mode=False):
                       u"сам автоматический список не меняется." % CORR_DIR,
               style="Hint.TLabel", wraplength=W - px(320), justify="left").pack(anchor="w", pady=(px(4), 0))
 
+    def set_targets(source=None):
+        """Список «Весь вывоз на один магазин» - только магазины, которые run_split примет (без источника, Полевой и ЮА)."""
+        vals = [u""] + split_targets(dirs, source)
+        one_cb.config(values=vals)
+        if one_var.get() not in vals:
+            one_var.set(u"")
+
     def show_sp_info():
         fp = sp_var.get()
         if not fp:
             sp_info.config(text=u"В «%s» нет листов. Исправьте список вывоза в Excel и сохраните сюда или возьмите автоматический ниже." % CORR_DIR,
                            foreground=AMB)
+            set_targets()
             return
         chk = corrected_check(fp)
         sp_info.config(text=chk["text"], foreground=GRN if chk["ok"] else RED)
+        set_targets(chk["shop"] if chk["ok"] else None)
 
     def on_sp_pick(*_):
         i = sp_cb.current()
@@ -7034,15 +7240,14 @@ def run_app2(dirs=None, test_mode=False):
     r = row(c, px(8))
     ttk.Label(r, text=u"Весь вывоз на один магазин:").pack(side="left")
     one_var = tk.StringVar(value=u"")
-    _one_vals = [u""] + sorted(set(x for v_ in rz.ROUTES.values() for x in v_))
-    ttk.Combobox(r, textvariable=one_var, values=_one_vals, width=30).pack(side="left", padx=(px(8), px(8)))
+    one_cb = ttk.Combobox(r, textvariable=one_var, values=[u""] + split_targets(dirs), width=30, state="readonly")
+    one_cb.pack(side="left", padx=(px(8), px(8)))
     ttk.Label(r, text=u"пусто - делить как обычно; выбран магазин - туда едет всё, что обычно делится по точкам (и кеги), товар РЦ - на Полевая-Склад; "
                       u"в Распределение.xlsx оценка продаж за %d дн. и сравнение магазинов" % EFF_DAYS,
               style="Hint.TLabel", wraplength=max(px(200), W - px(560)), justify="left").pack(side="left")
 
     def open_split_xlsx():
-        d = (st["split"] or {}).get("out_dir")
-        fp = os.path.join(d, u"Распределение.xlsx") if d else u""
+        fp = (st["split"] or {}).get("xlsx") or u""
         open_path(fp) if fp and os.path.isfile(fp) else nores()
 
     r = row(p2)
@@ -7056,16 +7261,11 @@ def run_app2(dirs=None, test_mode=False):
 
     def split_go():
         fp = sp_var.get().strip()
-        if not fp or not os.path.isfile(fp):
-            messagebox.showinfo(u"Распределение", u"Выберите лист из папки «%s» или возьмите автоматический список («Взять без правок»)." % CORR_DIR, parent=app)
+        v_ = validate_split_input(dirs, fp)
+        if not v_["ok"]:
+            (messagebox.showinfo if v_["level"] == "info" else messagebox.showwarning)(u"Распределение", v_["text"], parent=app)
             return
-        if not is_in_corr(dirs, fp):
-            messagebox.showwarning(u"Распределение", u"Распределение берёт листы только из папки «%s»." % CORR_DIR, parent=app)
-            return
-        chk = corrected_check(fp)
-        if not chk["ok"]:
-            messagebox.showwarning(u"Распределение", chk["text"], parent=app)
-            return
+        chk = v_["chk"]
         n, skip, auto = _clamp_top(top_var.get()), not bool(rc_var.get()), bool(auto_var.get())
         one = one_var.get().strip()
         if one and not messagebox.askyesno(u"Распределение", u"Всё, что обычно делится по точкам (в т.ч. кеги), - на один магазин: %s?\nТовар РЦ - как обычно на Полевая-Склад (лист: %d поз.)."
@@ -7076,7 +7276,7 @@ def run_app2(dirs=None, test_mode=False):
             st["split"] = info or {}
             tv2.delete(*tv2.get_children())
             for a, kk, q, sm in st["split"].get("summary", []):
-                tv2.insert("", "end", values=(a, kk, u"%.3f" % q, u"{:,.2f}".format(sm).replace(",", u" ")))
+                tv2.insert("", "end", values=(a, kk, fmt_qty(q), fmt_money(sm, 2)))
             journal((u"Весь вывоз на %s" % one) if one else (u"Распределение на %d точек" % n), _split_text(st["split"]))
             ok = st["split"].get("ok")
             note2.config(text=u"Подробности - в «Журнале»" if ok else u"Есть ошибки - см. «Журнал»", foreground=MUT if ok else RED)
@@ -7186,9 +7386,8 @@ def run_app2(dirs=None, test_mode=False):
               style="Hint.TLabel").pack(anchor="w", pady=(px(4), 0))
 
     def open_final_xlsx():
-        d_ = (st["final"] or {}).get("out_dir")
-        fs_ = [f_ for f_ in (os.listdir(d_) if d_ and os.path.isdir(d_) else []) if f_.lower().endswith(".xlsx")]
-        open_path(os.path.join(d_, fs_[0])) if fs_ else nores()
+        fp_ = (st["final"] or {}).get("xlsx") or u""
+        open_path(fp_) if fp_ and os.path.isfile(fp_) else nores()
 
     r = row(pf)
     btn(r, u"Собрать файл инвентаризации", lambda: fin_go(), primary=True, side_="right")
@@ -7216,7 +7415,7 @@ def run_app2(dirs=None, test_mode=False):
             st["final"] = info or {}
             tvf.delete(*tvf.get_children())
             for a_, n_, q_, sm_ in st["final"].get("summary", []):
-                tvf.insert("", "end", values=(a_, n_, u"%.3f" % q_, u"{:,.2f}".format(sm_).replace(",", u" ")))
+                tvf.insert("", "end", values=(a_, n_, fmt_qty(q_), fmt_money(sm_, 2)))
             journal(u"Инвентаризация ЮА (финал)", _final_text(st["final"]))
             ok_ = st["final"].get("ok")
             note4.config(text=u"Подробности - в «Журнале»" if ok_ else u"Есть ошибки - см. «Журнал»", foreground=MUT if ok_ else RED)
