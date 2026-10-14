@@ -46,7 +46,7 @@ hiddenimports += [
     "raschet_zakaza",
     "tkinter",
     "tkinter.ttk",
-    "vyvoz_gui", "vyvoz_gui.app", "vyvoz_gui.page_vyvoz", "vyvoz_gui.suppliers", "vyvoz_gui.widgets",
+    "vyvoz_gui", "vyvoz_gui.app", "vyvoz_gui.page_vyvoz", "vyvoz_gui.page_split", "vyvoz_gui.page_upd", "vyvoz_gui.page_fin", "vyvoz_gui.suppliers", "vyvoz_gui.widgets",
     "vyvoz_gui.theme", "vyvoz_gui.tokens", "vyvoz_gui.assets", "vyvoz_gui.worker",
     "openpyxl.cell._writer",
     "pandas._libs.tslibs.base",

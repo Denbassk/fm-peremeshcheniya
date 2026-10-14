@@ -6,6 +6,8 @@
 """
 
 FONT = "Inter"
+FONT_FALLBACK = "Segoe UI"         # если Inter не загрузился или выбран в «Сервисе»
+FONT_MODES = (("inter", u"Inter"), ("segoe", u"Segoe UI"))
 FONT_ICONS = "Material Symbols Outlined"
 
 SPACING_XS, SPACING_SM, SPACING_MD, SPACING_LG, SPACING_XL = 4, 8, 16, 24, 32

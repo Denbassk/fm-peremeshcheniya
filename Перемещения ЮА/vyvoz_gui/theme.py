@@ -4,15 +4,18 @@ from PySide6.QtGui import QGuiApplication
 
 from . import tokens as T
 
+FONT_DEFAULT = "inter"
+
 MODES = (("light", u"Светлая"), ("dark", u"Тёмная"), ("system", u"Как в Windows"))
 DEFAULT_MODE = "light"          # решение владельца 14.10.2026: в магазинах привыкли к светлой, списки печатаются на светлом
 
 
-def build_qss(c, check_png=u""):
-    """Полная таблица стилей для палитры c (tokens.LIGHT или tokens.DARK). check_png - картинка галочки (assets.check_png)."""
+def build_qss(c, check_png=u"", family=T.FONT, arrow_dn=u"", arrow_up=u""):
+    """Полная таблица стилей для палитры c (tokens.LIGHT или tokens.DARK). check_png - картинка галочки (assets.check_png).
+    family - шрифт из «Сервиса»; хинтинг QSS не задаёт: он берётся из шрифта приложения (assets.ui_font)."""
     b, s = T.TYPO_BODY_MD[0], T.TYPO_BODY_SM[0]
     return f"""
-* {{ font-family: "{T.FONT}", "Segoe UI"; font-size: {b}px; }}
+* {{ font-family: "{family}", "{T.FONT_FALLBACK}"; font-size: {b}px; }}
 QWidget {{ color: {c['text']}; }}
 QMainWindow, #content, #page, QScrollArea, #scrollBody {{ background: {c['bg']}; }}
 QToolTip {{ background: {c['tooltip_bg']}; color: {c['tooltip_text']}; border: none; padding: {T.SPACING_SM}px; }}
@@ -75,6 +78,18 @@ QLineEdit, QComboBox, QSpinBox {{ background: {c['surface']}; border: 1px solid 
     padding: {T.SPACING_XS + 2}px {T.SPACING_SM}px; min-height: 22px; selection-background-color: {c['selection_bg']};
     selection-color: {c['selection_text']}; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border: 2px solid {c['focus']}; padding: {T.SPACING_XS + 1}px {T.SPACING_SM - 1}px; }}
+QComboBox::drop-down {{ border: none; width: 28px; subcontrol-origin: padding; subcontrol-position: center right; }}
+QComboBox::down-arrow {{ image: url("{arrow_dn}"); width: 12px; height: 12px; }}
+QComboBox::down-arrow:disabled, QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled {{ image: none; }}
+QSpinBox {{ padding-right: 24px; }}
+QSpinBox::up-button, QSpinBox::down-button {{ border: none; background: transparent; width: 22px; subcontrol-origin: border; }}
+QSpinBox::up-button {{ subcontrol-position: top right; }}
+QSpinBox::down-button {{ subcontrol-position: bottom right; }}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: {c['surface_mid']}; }}
+QSpinBox::up-arrow {{ image: url("{arrow_up}"); width: 10px; height: 10px; }}
+QSpinBox::down-arrow {{ image: url("{arrow_dn}"); width: 10px; height: 10px; }}
+QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {{ color: {c['text_muted']}; background: {c['surface_low']};
+    border-color: {c['outline_variant']}; }}
 QComboBox QAbstractItemView {{ background: {c['surface']}; border: 1px solid {c['outline_variant']};
     selection-background-color: {c['selection_bg']}; selection-color: {c['selection_text']}; outline: none; }}
 QCheckBox, QRadioButton {{ spacing: {T.SPACING_SM}px; }}
@@ -125,6 +140,8 @@ class ThemeManager(QObject):
         self.settings = settings or QSettings("FamilyMarket", "VyvozVneMatricy")
         m = str(self.settings.value("theme", DEFAULT_MODE))
         self.mode = m if m in dict(MODES) else DEFAULT_MODE
+        f = str(self.settings.value("font", FONT_DEFAULT))
+        self.font_mode = f if f in dict(T.FONT_MODES) else FONT_DEFAULT
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(lambda *_: self.mode == "system" and self.apply())
         except Exception:
@@ -146,8 +163,24 @@ class ThemeManager(QObject):
         self.settings.setValue("theme", self.mode)
         self.apply()
 
+    def family(self):
+        """Шрифт, который выбран в «Сервисе» (Inter / Segoe UI)."""
+        return dict(T.FONT_MODES)[self.font_mode]
+
+    def set_font(self, mode):
+        self.font_mode = mode if mode in dict(T.FONT_MODES) else FONT_DEFAULT
+        self.settings.setValue("font", self.font_mode)
+        self.apply()
+
+    def font_report(self):
+        from .assets import font_report
+        return font_report(self.app.font(), self.family())
+
     def apply(self):
         c = self.palette()
-        from .assets import check_png
-        self.app.setStyleSheet(build_qss(c, check_png(c["on_checked"])))
+        from .assets import arrow_png, check_png, ui_font
+        f = ui_font(family=self.family())
+        self.app.setFont(f)
+        self.app.setStyleSheet(build_qss(c, check_png(c["on_checked"]), f.family(), arrow_png(c["text_muted"]),
+                                         arrow_png(c["text_muted"], up=True)))
         self.changed.emit(c)
