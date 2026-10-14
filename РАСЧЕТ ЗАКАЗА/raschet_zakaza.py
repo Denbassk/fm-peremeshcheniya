@@ -176,6 +176,26 @@ def entity_of_shops(shops):
 
 def entity_suffix():
     return ENTITY_DIR_SUFFIX.get(ENTITY, "")
+
+
+# ---- склады: заказ на них не считается никогда (решение пользователя 14.10) ----
+# Полевая-Склад (Family) - только склад, продаж нет.
+# Полевая-Склад ЮА - склад и опт: продажи есть, но перемещения на него не делаем.
+NO_ORDER_SHOPS = (u"Полевая-Склад", u"Полевая-Склад ЮА")
+
+
+def is_no_order_shop(s):
+    return route_key(s) in {route_key(x) for x in NO_ORDER_SHOPS}
+
+
+def drop_no_order_shops(w):
+    """Строки складов убираются до расчёта: ни заказа, ни доли в раздаче."""
+    m = w["shop"].map(is_no_order_shop)
+    if m.any():
+        R.check("INFO", u"Склад не получатель",
+                u"%s: исключено %d строк, заказ на склад не считается"
+                % ("; ".join(sorted(set(w.loc[m, "shop"]))), int(m.sum())))
+    return w[~m]
 SUPPLIER_MIN_FRAC   = ROUND_EPS   # ROUND_EPS = всегда вверх; 0.34 = экономный вариант
 INDIVISIBLE = ("ves_fix", "sht_nedelimyy")   # не дробится даже при перемещении
 SUP_MAX_PCS_AUTO = 24    # коробка штучного товара крупнее - только через ручной список
@@ -535,10 +555,16 @@ def self_test():
             ebad.append(u"%s -> %s" % ("; ".join(shops), entity_of_shops(shops)))
     if route_key(u"Пр-т Ювілейний 67 ЮА") != route_key(u"Пр-т Ювілейний 67"):
         ebad.append(u"сверка куста не видит магазин ЮА")
+    for nm, exp in ((u"Полевая-Склад", True), (u"Полевая-Склад ЮА", True),
+                    (u"полевая-склад юа", True), (u"Полевая-Магазин", False),
+                    (u"Полевая-Магазин ЮА", False), (u"Бучми 32", False)):
+        if is_no_order_shop(nm) != exp:
+            ebad.append(u"склад: %s -> %s" % (nm, not exp))
     if ebad:
         R.check("ERROR", "Тест юрлиц", "; ".join(ebad))
         return False
-    R.check("OK", "Тест юрлиц", u"«... ЮА» = база ЮА Маркет, смешанная ведомость ловится")
+    R.check("OK", "Тест юрлиц", u"«... ЮА» = база ЮА Маркет, смешанная ведомость ловится, "
+                                  u"склады не получатели")
     return True
 
 # ==================== ЧТЕНИЕ ИСТОЧНИКА =======================
@@ -3287,7 +3313,7 @@ def main_one(entity=None):
             "H='%s', I='%s', L='%s', адрес='%s'" % (c["sale"], c["out"], c["end"], c["shop"]))
 
     balance_check(df, c)
-    w = prepare(df, c)
+    w = drop_no_order_shops(prepare(df, c))
     if not barcode_check(w):
         return 2
     weight_map = detect_weight(w)
