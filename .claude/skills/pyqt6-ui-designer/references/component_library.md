@@ -294,8 +294,8 @@ class StatCard(QFrame):
         icon_bg.setFixedSize(48, 48)
         icon_bg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon_bg.setStyleSheet(f"""
-            background-color: {COLOR_PRIMARY_FIXED};
-            color: {COLOR_PRIMARY};
+            background-color: {COLOR_SURFACE_HIGH};       /* не красный: акцент только у кнопки действия */
+            color: {COLOR_ON_SURFACE};
             border-radius: {RADIUS_LG}px;
         """)
         layout.addWidget(icon_bg)
