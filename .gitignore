@@ -55,3 +55,6 @@ _АРХИВ/
 __pycache__/
 *.pyc
 ~$*
+
+**/.claude/worktrees/
+desktop.ini
