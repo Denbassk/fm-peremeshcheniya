@@ -543,18 +543,35 @@ def load_ua(dirs, use_ua=True):
             R.check("WARN", u"Магазин в базе ЮА: чтение", u"%s: %s" % (os.path.basename(p), e))
             continue
         info["shops_rows"] += len(df)
-        parts.append(pd.DataFrame({"key": df["key"], "name": df["name"], "src": u"магазин ЮА", "bc": df["bc"]}))
+        parts.append(pd.DataFrame({"key": df["key"], "name": df["name"], "src": u"магазин ЮА", "bc": df["bc"],
+                                   "ua_shop": [str(x) for x in df["shop"]]}))
     if info["shops_rows"]:
         R.check("OK", u"Магазины в базе ЮА", u"%d строк" % info["shops_rows"])
     else:
         R.check("INFO", u"Магазины в базе ЮА", u"выгрузок нет (магазин ещё не перешёл на ЮА)")
     ua = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["key", "name", "src", "bc"])
     ua["bc"] = ua["bc"].fillna(u"") if "bc" in ua.columns else u""
+    ua["ua_shop"] = ua["ua_shop"].fillna(u"") if "ua_shop" in ua.columns else u""
     ua = ua[ua["key"] != ""]
     if not UA_COUNT_INVENTORY:
         ua = ua[~ua["src"].str.contains(u"инвентаризац")]
     ua = ua.assign(_r=ua["src"].map(_src_rank)).sort_values("_r", kind="stable").drop(columns="_r")
     return ua.reset_index(drop=True), info
+
+
+def _ua_shop_key(name):
+    """Имя магазина из выгрузки базы ЮА («Болградська 38 ЮА») -> ключ магазина Family (с учётом переименований)."""
+    return _skey(re.sub(u"\\s*юа\\s*$", u"", str(name).strip(), flags=re.I))
+
+
+def ua_for_shop(ua_df, shop):
+    """Реестр ЮА для одного магазина: склад ЮА и приходы - целиком, из выгрузок МАГАЗИНЫ_ЮА - только строки этого магазина
+    (номенклатура магазина в базе ЮА - его собственная; выгрузка другого магазина на этот магазин не влияет)."""
+    if "ua_shop" not in ua_df.columns or not len(ua_df):
+        return ua_df
+    k = _skey(shop)
+    keep = (ua_df["ua_shop"] == u"") | ua_df["ua_shop"].map(lambda x: _ua_shop_key(x) == k)
+    return ua_df[keep].reset_index(drop=True)
 
 
 # ====================== BIGQUERY + КЭШ =======================
@@ -1788,11 +1805,18 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
     R.check("INFO", u"Магазинов в работе", u"%d: %s" % (len(sel), u"; ".join(sel)))
 
     ua_df, uinfo = load_ua(dirs, use_ua)
+    ref_parts = None                                     # справочник строится по магазину: МАГАЗИНЫ_ЮА - только его выгрузка
     if ref is None and not R.errors:
         fr = load_reference(dirs)
         if fr is not None:
-            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], ua_df, fr["hist"], pairs=load_shk_pairs(dirs),
-                           ua_map=load_ua_map(dirs)[0])
+            ref_parts = (fr, load_shk_pairs(dirs), load_ua_map(dirs)[0])
+            ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], ua_df[ua_df["ua_shop"] == u""], fr["hist"],
+                           pairs=ref_parts[1], ua_map=ref_parts[2])
+    if use_ua and len(ua_df) and sel:
+        other = sorted(set(x for x in ua_df["ua_shop"] if x and not any(_ua_shop_key(x) == _skey(s_) for s_ in sel)))
+        if other:
+            R.check("INFO", u"Магазины в базе ЮА: не учитываются",
+                    u"%s - выгрузки других магазинов: на выбранные магазины не влияют" % u"; ".join(other))
     if ref is not None and use_ua:
         inm = sum(1 for k in set(ua_df["key"]) if k in ref.matrix)
         R.check("INFO", u"Склад ЮА и матрица",
@@ -1853,7 +1877,11 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
         n0 = len(agg)
         agg = merge_recoded_duplicates(agg, ref)
         pinfo["merged"] += n0 - len(agg)
-        res = classify_stock(agg, ref, use_ua, remove_not_on_ua, excl_set, keep_set)
+        ref_s = ref
+        if ref_parts is not None:
+            fr_, pr_, um_ = ref_parts
+            ref_s = make_ref(fr_["matrix"], fr_["recode"], fr_["coffee"], ua_for_shop(ua_df, shop), fr_["hist"], pairs=pr_, ua_map=um_)
+        res = classify_stock(agg, ref_s, use_ua, remove_not_on_ua, excl_set, keep_set)
         if sweep:
             res = sweep_verdicts(res, sweep_rules, ref)
         elif manual:
@@ -2797,6 +2825,7 @@ def _self_test_body(gui=False):
     _selftest_split_update(ck)
     _selftest_split_guard(ck)
     _selftest_bad_bc(ck)
+    _selftest_ua_shops(ck)
     _selftest_kegs(ck)
     _selftest_split_min(ck)
     _selftest_manual_rules(ck)
@@ -3067,6 +3096,27 @@ def _selftest_bad_bc(ck):
         ck(st_ == "OK" and lines_ == [u"%s;4" % _ean("482000000001")],
            "некорректный ШК не ломает магазин и не идёт в txt инвентаризации: %s %s" % (st_, lines_))
         ck(any(u"некорректный ШК" in n_ for _s, n_, _d in R.checks), "некорректный ШК в инвентаризации: предупреждение")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_ua_shops(ck):
+    """МАГАЗИНЫ_ЮА: на магазин влияет только его собственная выгрузка в базе ЮА (номенклатура магазина), чужая - нет."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_uashops_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        X1, X2 = _ean("482000066001"), _ean("482000066002")
+        _write_state_xlsx(os.path.join(d.ua_wh, u"Состояние склада Полевая склад ЮА 08.10.2026.xlsx"), u"Полевая-Склад ЮА",
+                          [(_ean("500000000001"), u"Склад товар", 1, u"шт", 1.0)], shop_name=u"Полевая-Склад ЮА")
+        _write_state_xlsx(os.path.join(d.ua_stores, u"Состояние склада Болградська 38 ЮА.xlsx"), u"Болградська 38 ЮА",
+                          [(X1, u"Товар своей номенклатуры", 0, u"шт", 1.0)], shop_name=u"Болградська 38 ЮА")
+        _write_state_xlsx(os.path.join(d.ua_stores, u"Состояние склада Качанівська 19 ЮА.xlsx"), u"Качанівська 19 ЮА",
+                          [(X2, u"Товар чужого магазина", 5, u"шт", 1.0)], shop_name=u"Качанівська 19 ЮА")
+        ua_, _i = load_ua(d)
+        own = set(ua_for_shop(ua_, u"Грозненська 38")["key"])
+        ck(bc_key(X1) in own and bc_key(X2) not in own and bc_key(_ean("500000000001")) in own,
+           "МАГАЗИНЫ_ЮА: Грозненська 38 видит свою выгрузку (Болградська 38 ЮА, в т.ч. с нулём) и склад ЮА, чужую нет")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -5501,6 +5551,7 @@ def run_final_inventory(dirs, shop, state_path=None, ref=None, use_ua=True, day=
                          % (os.path.basename(path), age))
     try:
         ua_df, _uinfo = load_ua(dirs, use_ua)
+        ua_df = ua_for_shop(ua_df, shop_n)                    # из МАГАЗИНЫ_ЮА - только выгрузка этого магазина
         if ref is None:
             fr = load_reference(dirs)
             if fr is None:
