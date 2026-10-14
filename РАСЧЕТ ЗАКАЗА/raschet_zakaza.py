@@ -97,7 +97,9 @@ MAKE_SUPPLIER_ORDER = True   # писать сводный файл _ЗАКАЗ_
 
 # ---- раздача конкретного списка с Полевой (режим выбирается в окне) ----
 DIST_FILE        = ""                   # путь к списку; пусто = обычный расчёт
-DIST_SOURCE_SHOP = u"Полевая-Магазин"   # источник, получателем быть не может
+# источник раздачи - склад своей базы, получателем быть не может (решение 14.10)
+DIST_SOURCE_SHOP    = u"Полевая-Склад"      # Family
+DIST_SOURCE_SHOP_UA = u"Полевая-Склад ЮА"   # ЮА Маркет: склад и опт
 DIST_LIMIT_STOCK = True                 # резать потребность под наличие
 DIST_DIR_SUFFIX  = u"_РАЗДАЧА"          # своя папка результата
 # Позиции из списка, которых на точках никогда не было: истории нет,
@@ -176,6 +178,11 @@ def entity_of_shops(shops):
 
 def entity_suffix():
     return ENTITY_DIR_SUFFIX.get(ENTITY, "")
+
+
+def dist_source():
+    """Склад, с которого раздаём: у каждой базы свой."""
+    return DIST_SOURCE_SHOP_UA if ENTITY == "UA" else DIST_SOURCE_SHOP
 
 
 # ---- склады: заказ на них не считается никогда (решение пользователя 14.10) ----
@@ -743,7 +750,7 @@ def check_route(day, shops_in_file, other=()):
     if dist_on():
         R.check("INFO", u"График отгрузки",
                 u"раздача с %s: куст не проверяем, точек в файле %d"
-                % (DIST_SOURCE_SHOP, len(set(shops_in_file))))
+                % (dist_source(), len(set(shops_in_file))))
         return ROUTE_BY_DOW.get(day.weekday()) or "A"
     alias = {route_key(k): route_key(v) for k, v in ROUTE_ALIASES.items()}
     have, own = {}, set()
@@ -1982,7 +1989,7 @@ def distribute_new(orders, w, weight_map, bcs, avail):
     """Разнарядка по позициям без истории на точках."""
     if DIST_NEW_MODE == "net" or w is None or not avail:
         return orders
-    src = route_key(DIST_SOURCE_SHOP)
+    src = route_key(dist_source())
     shop_rows = w[w["shop"].map(lambda s: route_key(s) != src)]
     if shop_rows.empty:
         return orders
@@ -2095,7 +2102,7 @@ def _dist_shares(w):
     """Доли точек по обороту. Источник исключён."""
     if w is None or not len(w):
         return None
-    src = route_key(DIST_SOURCE_SHOP)
+    src = route_key(dist_source())
     rows = w[w["shop"].map(lambda s: route_key(s) != src)]
     if rows.empty:
         return None
@@ -2151,7 +2158,7 @@ def _bc_shares(w, bc, share, st=None):
         return share
     key = (id(w), len(w))
     if _BC_CACHE.get("key") != key:
-        src = route_key(DIST_SOURCE_SHOP)
+        src = route_key(dist_source())
         rows = w[w["shop"].map(lambda s: route_key(s) != src)]
         _BC_CACHE.clear()
         _BC_CACHE["key"] = key
@@ -2196,7 +2203,7 @@ def apply_dist_list(orders, w=None, weight_map=None):
     if not bcs:
         return orders
 
-    src = route_key(DIST_SOURCE_SHOP)
+    src = route_key(dist_source())
     was = len(orders) if orders is not None else 0
     cols = (list(orders.columns) if orders is not None and len(orders.columns)
             else ["shop", "bc", "name", "qty", "raw", "step", "is_weight"])
@@ -2318,7 +2325,7 @@ def apply_dist_list_legacy(orders, w=None, weight_map=None):
     if not bcs:
         return orders
     was = len(orders)
-    src = route_key(DIST_SOURCE_SHOP)
+    src = route_key(dist_source())
     o = orders[orders["bc"].isin(bcs)].copy()
     o = o[o["shop"].map(lambda s: route_key(s) != src)]
     R.check("OK", u"Раздача по списку",
@@ -3166,11 +3173,11 @@ def dist_summary_text(orders):
         o = orders[orders["qty"] > 0]
         units = round(float(o["qty"].sum()), 3)
         txt = (u"\n\nРаздача с %s: %s ед. · точек %d · строк %d · ШК %d"
-               % (DIST_SOURCE_SHOP, units, o["shop"].nunique(), len(o),
+               % (dist_source(), units, o["shop"].nunique(), len(o),
                   o["bc"].nunique()))
         prices, used = {}, u""   # цен нет - сумму не считаем
         R.say(u"-" * 70)
-        R.say(u"Раздача с %s      : %s ед." % (DIST_SOURCE_SHOP, units))
+        R.say(u"Раздача с %s      : %s ед." % (dist_source(), units))
         if prices:
             pv = o["bc"].map(prices)
             o = o.assign(_m=o["qty"] * pv)
@@ -3368,7 +3375,7 @@ def main_one(entity=None):
     orders = apply_dist_list(orders, w, weight_map)
     if dist_on():
         R.check("OK", u"Режим", u"раздача с %s по списку %s"
-                % (DIST_SOURCE_SHOP, os.path.basename(DIST_FILE)))
+                % (dist_source(), os.path.basename(DIST_FILE)))
         if orders.empty:
             R.check("WARN", u"Раздача", u"ни одной точке ничего не нужно")
     day_dir = os.path.join(OUT_DIR, day.strftime("%Y-%m-%d") + dist_suffix()
@@ -3699,11 +3706,11 @@ def run_app():
                       "Amb.TLabel")
             refresh()
             return
-        dlbl.show(u"%s · %d позиций · %s исключена из получателей\n"
+        dlbl.show(u"%s · %d позиций · склад в получатели не входит\n"
                          u"результат ляжет в ЗАКАЗЫ\\<дата>%s, "
                          u"обычный заказ не затрагивается"
                          % (os.path.basename(p.rstrip("\\/")), dist_count(p),
-                            DIST_SOURCE_SHOP, DIST_DIR_SUFFIX),
+                            DIST_DIR_SUFFIX),
                   "Grn.TLabel")
         refresh()
 
@@ -3713,11 +3720,12 @@ def run_app():
     hint(mode, u"Каждый день: потребность каждого магазина по ведомости.",
          padx=(24, 0))
     ttk.Radiobutton(mode, variable=mode_v, value=1, command=mode_sync,
-                    text=u"Раздача с Полевой по списку"
+                    text=u"Раздача со склада по списку"
                     ).pack(anchor="w", pady=(8, 0))
-    dhint = hint(mode, u"Раздать с %s конкретный товар: файл Вывоз_ДД.ММ.ГГГГ.xlsx, "
-                       u"папка ВЫВОЗ_<дата> или txt/csv «штрих-код;количество»."
-                       % DIST_SOURCE_SHOP, padx=(24, 0))
+    dhint = hint(mode, u"Раздать со склада (%s / %s) конкретный товар: файл "
+                       u"Вывоз_ДД.ММ.ГГГГ.xlsx, папка ВЫВОЗ_<дата> или txt/csv "
+                       u"«штрих-код;количество»."
+                       % (DIST_SOURCE_SHOP, DIST_SOURCE_SHOP_UA), padx=(24, 0))
     dlbl = opt_label(dhint, "Mut.TLabel", padx=(24, 0))
     dbtn = ttk.Frame(mode)
     ttk.Button(dbtn, text=u"Выбрать файл со списком…", padding=(10, 4),
