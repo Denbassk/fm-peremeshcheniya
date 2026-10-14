@@ -36,6 +36,9 @@ for _pkg in (
     except Exception:
         pass
 
+# Окно PySide6 (--qt): шрифты Inter и значки Material Symbols, иконка окна. Ищутся в sys._MEIPASS (= vyvoz_lib).
+datas += [(os.path.join("assets", "fonts"), os.path.join("assets", "fonts")), ("vyvoz_fm.ico", ".")]
+
 if os.path.isfile(os.path.join(RZ, "raschet.ico")):
     datas += [(os.path.join(RZ, "raschet.ico"), ".")]      # raschet_zakaza ищет свою иконку рядом
 
@@ -43,6 +46,8 @@ hiddenimports += [
     "raschet_zakaza",
     "tkinter",
     "tkinter.ttk",
+    "vyvoz_gui", "vyvoz_gui.app", "vyvoz_gui.page_vyvoz", "vyvoz_gui.suppliers", "vyvoz_gui.widgets",
+    "vyvoz_gui.theme", "vyvoz_gui.tokens", "vyvoz_gui.assets", "vyvoz_gui.worker",
     "openpyxl.cell._writer",
     "pandas._libs.tslibs.base",
     "google.cloud.bigquery_storage",
@@ -61,6 +66,12 @@ a = Analysis(
         "matplotlib", "scipy", "PyQt5", "PySide2",
         "IPython", "notebook", "jupyter", "pytest", "sphinx",
         "PIL", "sqlalchemy",
+        # части Qt, которые окну не нужны (иначе сборка тяжелее на сотни МБ)
+        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick", "PySide6.QtWebChannel",
+        "PySide6.QtQuick", "PySide6.QtQuick3D", "PySide6.QtQml", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+        "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtPdf",
+        "PySide6.QtPdfWidgets", "PySide6.QtBluetooth", "PySide6.QtPositioning", "PySide6.QtLocation", "PySide6.QtSensors",
+        "PySide6.QtSerialPort", "PySide6.QtSql", "PySide6.QtTest", "PySide6.QtDesigner", "PySide6.QtHelp",
     ],
     noarchive=False,
     optimize=0,
