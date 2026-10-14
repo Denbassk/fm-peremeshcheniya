@@ -147,6 +147,35 @@ def dist_on():
 
 def dist_suffix():
     return DIST_DIR_SUFFIX if dist_on() else ""
+
+
+# ---- два юрлица: две базы Торгсофта (PATCH-ENTITY v1) ----
+# У магазинов базы ЮА Маркет в «Центре учета» в конце всегда «ЮА».
+# Ведомость каждой базы считается отдельно: своя папка результата и свои txt
+# (в ТСД заливаются из своей базы). Имена магазинов не переписываются.
+UA_SHOP_SUFFIX    = u"ЮА"
+ENTITY_LABEL      = {"FM": u"Family", "UA": u"ЮА Маркет"}
+ENTITY_DIR_SUFFIX = {"FM": u"", "UA": u"_ЮА"}   # ЗАКАЗЫ\<дата>_ЮА
+ENTITY            = "FM"                         # юрлицо текущего прогона
+
+
+def is_ua_shop(s):
+    return bool(re.search(r"\s%s$" % UA_SHOP_SUFFIX.lower(), str(s).strip().lower()))
+
+
+def entity_of_shops(shops):
+    """FM / UA по магазинам ведомости; MIX - вперемешку; None - магазинов нет."""
+    flags = {is_ua_shop(x) for x in shops
+             if str(x).strip() and str(x).strip().lower() != "nan"}
+    if not flags:
+        return None
+    if len(flags) > 1:
+        return "MIX"
+    return "UA" if flags.pop() else "FM"
+
+
+def entity_suffix():
+    return ENTITY_DIR_SUFFIX.get(ENTITY, "")
 SUPPLIER_MIN_FRAC   = ROUND_EPS   # ROUND_EPS = всегда вверх; 0.34 = экономный вариант
 INDIVISIBLE = ("ves_fix", "sht_nedelimyy")   # не дробится даже при перемещении
 SUP_MAX_PCS_AUTO = 24    # коробка штучного товара крупнее - только через ручной список
@@ -493,6 +522,23 @@ def self_test():
         R.check("ERROR", "Тест связок", "60 при связке 50 не дало 100")
         return False
     R.check("OK", "Тест связок", "60 -> 100, 101 -> 150 (всегда вверх)")
+
+    ebad = []
+    for nm, exp in ((u"Шевченко 341 ЮА", True), (u"Бучми 32 юа", True),
+                    (u"Шевченко 341", False), (u"Каюа 5", False), (u"Каюа", False)):
+        if is_ua_shop(nm) != exp:
+            ebad.append(u"%s -> %s" % (nm, not exp))
+    for shops, exp in (([u"Бучми 32 ЮА", u"Шевченко 341 ЮА"], "UA"),
+                       ([u"Бучми 32", u"Шевченко 341"], "FM"),
+                       ([u"Бучми 32", u"Шевченко 341 ЮА"], "MIX"), ([], None)):
+        if entity_of_shops(shops) != exp:
+            ebad.append(u"%s -> %s" % ("; ".join(shops), entity_of_shops(shops)))
+    if route_key(u"Пр-т Ювілейний 67 ЮА") != route_key(u"Пр-т Ювілейний 67"):
+        ebad.append(u"сверка куста не видит магазин ЮА")
+    if ebad:
+        R.check("ERROR", "Тест юрлиц", "; ".join(ebad))
+        return False
+    R.check("OK", "Тест юрлиц", u"«... ЮА» = база ЮА Маркет, смешанная ведомость ловится")
     return True
 
 # ==================== ЧТЕНИЕ ИСТОЧНИКА =======================
@@ -513,10 +559,8 @@ ALIASES = {
 }
 
 
-def find_source_file(quiet=False):
-    """Автопоиск: приоритет - дата в названии, затем дата изменения.
-    Используется как запасной путь, когда окно выбора файла недоступно,
-    и как подсказка по умолчанию для проводника (quiet=True)."""
+def _source_candidates():
+    """Ведомости в ВХОД и рядом с программой, свежие первыми."""
     found = []
     for folder in (IN_DIR, BASE_DIR):
         if not os.path.isdir(folder):
@@ -530,10 +574,17 @@ def find_source_file(quiet=False):
             full = os.path.join(folder, nm)
             d = extract_date(full)
             found.append((d, os.path.getmtime(full), full))
+    found.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return found
+
+
+def find_source_file(quiet=False):
+    """Автопоиск: приоритет - дата в названии, затем дата изменения.
+    Используется как запасной путь, когда окно выбора файла недоступно,
+    и как подсказка по умолчанию для проводника (quiet=True)."""
+    found = _source_candidates()
     if not found:
         return None
-
-    found.sort(key=lambda t: (t[0], t[1]), reverse=True)
     if len(found) > 1 and not quiet:
         R.check("WARN", "В папке несколько ведомостей",
                 "найдено %d, взят файл за %s: %s | остальные: %s"
@@ -541,6 +592,39 @@ def find_source_file(quiet=False):
                    os.path.basename(found[0][2]),
                    ", ".join(os.path.basename(f[2]) for f in found[1:4])))
     return found[0][2]
+
+
+def read_shops(path, nrows=None):
+    """Магазины (Центр учета) ведомости. nrows - быстрый взгляд на начало файла."""
+    try:
+        df = pd.read_excel(path, sheet_name=0, header=detect_header_row(path) - 1,
+                           nrows=nrows)
+        col = resolve_columns(df).get("shop")
+        if not col:
+            return []
+        v = df[col].dropna().astype(str).str.strip()
+        return sorted(set(x for x in v if x and x.lower() != "nan"))
+    except Exception:
+        return []
+
+
+def file_entity(path):
+    """FM / UA / MIX / None по первым строкам ведомости - быстро, для окна."""
+    return entity_of_shops(read_shops(path, nrows=400))
+
+
+def find_sources_by_entity(quiet=False):
+    """{"FM": путь, "UA": путь} - свежайшая ведомость каждой базы."""
+    by = {}
+    for _d, _mt, full in _source_candidates():
+        by.setdefault("UA" if file_entity(full) == "UA" else "FM", []).append(full)
+    for ent, lst in by.items():
+        if len(lst) > 1 and not quiet:
+            R.check("WARN", u"В папке несколько ведомостей %s" % ENTITY_LABEL[ent],
+                    u"найдено %d, взят %s | остальные: %s"
+                    % (len(lst), os.path.basename(lst[0]),
+                       ", ".join(os.path.basename(f) for f in lst[1:4])))
+    return {ent: lst[0] for ent, lst in by.items()}
 
 
 def extract_date(path):
@@ -607,6 +691,7 @@ ROUTE_ALIASES = {
     u"Героев Сталинграда 156":   u"Байрона 156",
     u"Героїв Сталінграда 163":   u"Байрона 163",
     u"Героев Сталинграда 163":   u"Байрона 163",
+    u"Болградська 38":           u"Грозненська 38",   # имя в базе ЮА Маркет
 }
 DOW_RU = [u"понедельник", u"вторник", u"среда", u"четверг",
           u"пятница", u"суббота", u"воскресенье"]
@@ -620,22 +705,32 @@ def route_key(s):
     """Ключ сравнения адреса: регистр, пробелы, дроби и латинские двойники
     не должны мешать сопоставлению."""
     t = re.sub(r"\s+", " ", str(s).strip().lower())
+    t = re.sub(r"\s%s$" % UA_SHOP_SUFFIX.lower(), "", t)   # «Бучми 32 ЮА» = «Бучми 32»
     t = "".join(_LAT2CYR.get(ch, ch) for ch in t)
     return re.sub(r"[/\\.-]", "", t)
 
 
-def check_route(day, shops_in_file):
-    """Сверка состава магазинов с графиком отгрузки."""
+def check_route(day, shops_in_file, other=()):
+    """Сверка состава магазинов с графиком отгрузки.
+    other - магазины ведомости второго юрлица на тот же день: их здесь
+    не считаем, но и пропавшими не называем."""
     if dist_on():
         R.check("INFO", u"График отгрузки",
                 u"раздача с %s: куст не проверяем, точек в файле %d"
                 % (DIST_SOURCE_SHOP, len(set(shops_in_file))))
         return ROUTE_BY_DOW.get(day.weekday()) or "A"
     alias = {route_key(k): route_key(v) for k, v in ROUTE_ALIASES.items()}
-    have = {}
-    for x in shops_in_file:
+    have, own = {}, set()
+    for x in list(other) + list(shops_in_file):
         k = route_key(x)
         have[alias.get(k, k)] = x
+    for x in shops_in_file:
+        k = route_key(x)
+        own.add(alias.get(k, k))
+    if other:
+        R.check("INFO", u"Вторая ведомость",
+                u"%d магазинов другого юрлица учтены при сверке куста, "
+                u"считаются отдельно" % len(set(other)))
     scores = {k: len(have.keys() & {route_key(a) for a in v})
               for k, v in ROUTES.items()}
     best = max(scores, key=lambda k: scores[k])
@@ -658,7 +753,7 @@ def check_route(day, shops_in_file):
     want = ROUTES[use]
     miss = [a for a in want if route_key(a) not in have]
     extra = [have[k] for k in have
-             if k not in {route_key(a) for a in want}]
+             if k in own and k not in {route_key(a) for a in want}]
 
     paused = [a for a in miss if a in ROUTE_PAUSED]
     miss = [a for a in miss if a not in ROUTE_PAUSED]
@@ -769,9 +864,9 @@ def history_same_file(fp):
     return same[-1] if same else None
 
 
-def day_dir_state(day):
+def day_dir_state(day, suffix=""):
     """(путь, магазинов внутри, время последней записи) для папки этой даты."""
-    d = os.path.join(OUT_DIR, day.strftime("%Y-%m-%d"))
+    d = os.path.join(OUT_DIR, day.strftime("%Y-%m-%d") + suffix)
     if not os.path.isdir(d):
         return d, 0, None
     try:
@@ -1070,13 +1165,18 @@ def _gui_pick(default_src):
                                    if day != guess else origin)
 
 
-GUI_CHOICE = None   # заполняется окном перед запуском расчёта
+GUI_CHOICE  = None  # заполняется окном перед запуском расчёта
+GUI_SOURCES = None  # окно: [(юрлицо, путь)] - по ведомости на базу
+JOB_CHOICE  = None  # выбор для текущего прогона (ставит main)
+OTHER_SHOPS = []    # магазины ведомости второго юрлица - для сверки куста
 
 
 def pick_source():
     """(файл, дата, чистить_папку, архивировать, откуда_дата) или None.
     Порядок: --auto -> автопоиск без окон; путь аргументом -> он;
     иначе проводник. Любая осечка окон = откат на прежнее поведение."""
+    if JOB_CHOICE:
+        return JOB_CHOICE
     if GUI_CHOICE:
         return GUI_CHOICE
     args = [a for a in sys.argv[1:] if a.strip()]
@@ -3069,8 +3169,61 @@ def dist_summary_text(orders):
         return u""
 
 
+def plan_jobs():
+    """[(юрлицо или None, выбор для pick_source или None)] - по прогону на базу.
+    (None, None) = прежний путь: один файл, pick_source выбирает сам."""
+    if GUI_SOURCES:
+        rest = tuple(GUI_CHOICE[1:])
+        return [(e, (p,) + rest) for e, p in GUI_SOURCES]
+    args = [a for a in sys.argv[1:] if a.strip()]
+    auto = any(a.lower().lstrip("-/") in ("auto", "a") for a in args)
+    if any(not a.startswith(("-", "/")) for a in args) or (USE_GUI and not auto):
+        return [(None, None)]
+    if dist_on():
+        return [(None, None)]          # раздача - по одной ведомости, как раньше
+    found = find_sources_by_entity()
+    if not found:
+        return [(None, None)]          # pick_source сам скажет, что файла нет
+    day, origin = guess_day(found.get("FM") or found["UA"])
+    return [(e, (found[e], day, True, False, origin))
+            for e in ("FM", "UA") if e in found]
+
+
 def main():
+    """Ведомость каждой базы считается отдельно, Family первой."""
+    global JOB_CHOICE, OTHER_SHOPS
     ensure_dirs()
+    jobs = plan_jobs()
+    done = []
+    for n, (ent, choice) in enumerate(jobs):
+        if n:
+            R.checks, R.problems, R.anomalies = [], [], []
+            R.say("")
+        RUN_INFO.clear()
+        JOB_CHOICE = choice
+        OTHER_SHOPS = []
+        if len(jobs) > 1:
+            if done:
+                OTHER_SHOPS = list(done[-1].get("shops_list", []))
+            else:
+                OTHER_SHOPS = read_shops(jobs[1][1][0])
+        try:
+            code = main_one(ent)
+        finally:
+            JOB_CHOICE, OTHER_SHOPS = None, []
+        info = dict(RUN_INFO)
+        info.update({"entity": ENTITY, "code": code,
+                     "errors": len(R.errors), "warns": len(R.warns)})
+        done.append(info)
+    RUN_INFO.clear()
+    RUN_INFO["jobs"] = done
+    return max(i["code"] for i in done)
+
+
+def main_one(entity=None):
+    """Один прогон по одной ведомости. entity - юрлицо, если его задали
+    (окно, автопоиск); None - определяется по магазинам файла."""
+    global ENTITY
     R.say("=" * 70)
     R.say("РАСЧЁТ ЗАКАЗА С ВАЛИДАЦИЕЙ  |  %s" % datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
     R.say("=" * 70)
@@ -3085,7 +3238,10 @@ def main():
                 "не выбран (отмена) либо не найден - положите ведомость в %s" % IN_DIR)
         return 2
     src, day, do_clean, do_archive, date_origin = picked
+    ENTITY = entity or file_entity(src)
+    ENTITY = ENTITY if ENTITY in ENTITY_LABEL else "FM"
     R.check("OK", "Файл-источник", src)
+    R.check("INFO", "Юрлицо (база Торгсофта)", ENTITY_LABEL[ENTITY])
     R.check("INFO", "Дата заказа", "%s (%s)" % (day.strftime("%d.%m.%Y"), date_origin))
 
     stamp = read_export_stamp(src)
@@ -3108,7 +3264,7 @@ def main():
         R.check("WARN", "Дата заказа",
                 "отстоит от сегодняшней на %d дн., проверьте имя файла" % off)
 
-    busy = locked_files(os.path.join(OUT_DIR, day.strftime("%Y-%m-%d")))
+    busy = locked_files(os.path.join(OUT_DIR, day.strftime("%Y-%m-%d") + entity_suffix()))
     if busy:
         R.check("ERROR", "Файлы прошлого расчёта заняты",
                 "закройте в Excel и запустите снова: %s"
@@ -3138,7 +3294,21 @@ def main():
 
     shops_all = sorted(set(w["shop"]))
     R.check("INFO", "Уникальных адресов", "%d: %s" % (len(shops_all), "; ".join(shops_all)))
-    check_route(day, shops_all)
+    RUN_INFO["shops_list"] = shops_all
+    got = entity_of_shops(shops_all)
+    if got == "MIX":
+        R.check("ERROR", "Юрлицо",
+                u"в одной ведомости магазины двух баз (с «%s» в конце: %s). "
+                u"Выгрузите ведомость каждой базы отдельно"
+                % (UA_SHOP_SUFFIX, "; ".join(x for x in shops_all if is_ua_shop(x))))
+    elif got and got != ENTITY:
+        R.check("ERROR", "Юрлицо",
+                u"ведомость выбрана как %s, а магазины в ней %s - проверьте, тот ли файл"
+                % (ENTITY_LABEL[ENTITY], ENTITY_LABEL[got]))
+    else:
+        R.check("OK", "Юрлицо", u"все %d магазинов из базы %s"
+                % (len(shops_all), ENTITY_LABEL[ENTITY]))
+    check_route(day, shops_all, OTHER_SHOPS)
 
     names, collide = {}, []
     for s in shops_all:
@@ -3175,7 +3345,8 @@ def main():
                 % (DIST_SOURCE_SHOP, os.path.basename(DIST_FILE)))
         if orders.empty:
             R.check("WARN", u"Раздача", u"ни одной точке ничего не нужно")
-    day_dir = os.path.join(OUT_DIR, day.strftime("%Y-%m-%d") + dist_suffix())
+    day_dir = os.path.join(OUT_DIR, day.strftime("%Y-%m-%d") + dist_suffix()
+                           + entity_suffix())
     if do_clean:
         moved = clear_day_dir(day_dir)
         if moved:
@@ -3344,16 +3515,40 @@ def run_app():
     root = ttk.Frame(app, padding=(22, 18, 22, 0))
     root.pack(fill="both", expand=True)
     ttk.Label(root, text=u"Расчёт заказа перемещений", font=H1).pack(anchor="w")
-    ttk.Label(root, text=u"Считает, сколько товара везти с РЦ в магазины, и готовит "
-                         u"файлы для ТСД. Пройдите шаги 1-3 сверху вниз и нажмите "
-                         u"«Рассчитать заказ». В Торгсофт программа ничего не пишет: "
-                         u"результат ложится в папку ЗАКАЗЫ.",
+    ttk.Label(root, text=u"Сколько товара везти с РЦ в магазины, плюс файлы для ТСД. "
+                         u"Пройдите шаги 1-3 и нажмите «Рассчитать заказ». "
+                         u"В Торгсофт программа ничего не пишет.",
               style="Mut.TLabel", wraplength=640, justify="left"
               ).pack(anchor="w", pady=(2, 0))
 
-    setup = ttk.Frame(root)
+    # шаги - в прокручиваемой области: на маленьком экране (или при
+    # масштабе 125-150%) окно ниже содержимого, прокрутка вместо обрезки
+    holder = ttk.Frame(root)
+    holder.pack(fill="both", expand=True, pady=(12, 0))
+    cv = tk.Canvas(holder, highlightthickness=0, bd=0, bg=BG)
+    vsb = ttk.Scrollbar(holder, orient="vertical", command=cv.yview)
+    cv.configure(yscrollcommand=vsb.set)
+    cv.pack(side="left", fill="both", expand=True)
+    setup = ttk.Frame(cv)
+    setup_id = cv.create_window((0, 0), window=setup, anchor="nw")
     work  = ttk.Frame(root)
-    setup.pack(fill="both", expand=True, pady=(12, 0))
+
+    def sync_scroll(_e=None):
+        cv.configure(scrollregion=(0, 0, setup.winfo_reqwidth(),
+                                   setup.winfo_reqheight()),
+                     height=setup.winfo_reqheight())
+        need = setup.winfo_reqheight() > cv.winfo_height() + 2
+        if need and not vsb.winfo_manager():
+            vsb.pack(side="right", fill="y", before=cv)
+        elif not need and vsb.winfo_manager():
+            vsb.pack_forget()
+            cv.yview_moveto(0)
+
+    setup.bind("<Configure>", sync_scroll)
+    cv.bind("<Configure>", lambda e: (cv.itemconfigure(setup_id, width=e.width),
+                                      sync_scroll()))
+    app.bind_all("<MouseWheel>", lambda e: cv.yview_scroll(
+        int(-e.delta / 120), "units") if vsb.winfo_manager() else None)
 
     def card(parent):
         c = ttk.Frame(parent, style="Card.TFrame", padding=(16, 12))
@@ -3366,34 +3561,59 @@ def run_app():
         lb.pack(anchor="w", **kw)
         return lb
 
-    # ---------------- шаг 1: ведомость ----------------
+    def opt_label(after, style="Red.TLabel", **pk):
+        """Строка, которая видна только с текстом: пустые не занимают места."""
+        lb = ttk.Label(after.master, text=u"", style=style, wraplength=600,
+                       justify="left")
+
+        def show(text, style=None):
+            lb.config(text=text, **({"style": style} if style else {}))
+            if text and not lb.winfo_manager():
+                lb.pack(anchor="w", after=after, **pk)
+            elif not text and lb.winfo_manager():
+                lb.pack_forget()
+        lb.show = show
+        return lb
+
+    # ---------------- шаг 1: ведомости двух баз ----------------
     c1 = card(setup)
-    top1 = ttk.Frame(c1)
-    top1.pack(fill="x")
-    ttk.Label(top1, text=u"Шаг 1. Оборотная ведомость из Торгсофта",
-              style="H2.TLabel").pack(side="left")
-    ttk.Button(top1, text=u"Выбрать ведомость…",
-               command=lambda: choose()).pack(side="right")
-    hint(c1, u"Выгрузите оборотную ведомость по магазинам и положите в папку "
-             u"ВХОД: файл подставится сам. Другой файл - кнопка справа.",
-         pady=(4, 0))
-    fname = ttk.Label(c1, text="", style="Big.TLabel")
-    fname.pack(anchor="w", pady=(8, 0))
-    fdir = ttk.Label(c1, text="", style="Mut.TLabel")
-    fdir.pack(anchor="w")
-    fstamp = ttk.Label(c1, text="", style="Mut.TLabel")
-    fstamp.pack(anchor="w", pady=(6, 0))
-    fprev = ttk.Label(c1, text="", style="Red.TLabel", wraplength=600,
-                      justify="left")
-    fprev.pack(anchor="w")
+    ttk.Label(c1, text=u"Шаг 1. Оборотные ведомости из Торгсофта",
+              style="H2.TLabel").pack(anchor="w")
+    hint(c1, u"Выгрузите ведомость из каждой базы, где есть магазины куста, и "
+             u"положите в ВХОД - подставятся сами. Каждая база считается отдельно, "
+             u"в свою папку.", pady=(4, 0))
+    src = {"FM": tk.StringVar(), "UA": tk.StringVar()}
+    bad = {"FM": u"", "UA": u""}     # почему файл не подходит строке
+    rows = {}
+
+    def src_row(ent):
+        fr = ttk.Frame(c1)
+        fr.pack(fill="x", pady=(10, 0))
+        top = ttk.Frame(fr)
+        top.pack(fill="x")
+        ttk.Label(top, text=u"Ведомость %s" % ENTITY_LABEL[ent],
+                  style="Big.TLabel").pack(side="left")
+        ttk.Button(top, text=u"Убрать", padding=(8, 2),
+                   command=lambda: (load(ent, ""), fit())).pack(side="right")
+        ttk.Button(top, text=u"Выбрать ведомость…", padding=(8, 2),
+                   command=lambda: choose(ent)).pack(side="right", padx=(0, 6))
+        nm = ttk.Label(fr, text=u"", wraplength=600, justify="left")
+        nm.pack(anchor="w")
+        info = ttk.Label(fr, text=u"", style="Mut.TLabel", wraplength=600,
+                         justify="left")
+        info.pack(anchor="w")
+        warn = opt_label(info)
+        rows[ent] = (nm, info, warn)
+
+    src_row("FM")
+    src_row("UA")
 
     # ---------------- шаг 2: дата ----------------
     c2 = card(setup)
     ttk.Label(c2, text=u"Шаг 2. Проверьте дату отгрузки",
               style="H2.TLabel").pack(anchor="w")
-    hint(c2, u"Дата взята из имени файла. По ней называется папка с результатом "
-             u"и проверяется, тот ли это куст. На количество в заказе не влияет.",
-         pady=(4, 0))
+    hint(c2, u"Взята из имени файла. Задаёт папку результата и сверку куста, "
+             u"на количество не влияет.", pady=(4, 0))
     drow = ttk.Frame(c2)
     drow.pack(anchor="w", pady=(8, 0))
     dv = tk.StringVar()
@@ -3404,9 +3624,7 @@ def run_app():
     route_l = ttk.Label(c2, text="", style="Mut.TLabel", wraplength=600,
                         justify="left")
     route_l.pack(anchor="w", pady=(8, 0))
-    warn_l = ttk.Label(c2, text="", style="Amb.TLabel", wraplength=600,
-                       justify="left")
-    warn_l.pack(anchor="w")
+    warn_l = opt_label(route_l, "Amb.TLabel")
 
     # ---------------- шаг 3: режим расчёта ----------------
     mode = card(setup)
@@ -3442,7 +3660,7 @@ def run_app():
 
     def mode_sync():
         if not mode_v.get():
-            dlbl.config(text=u"", style="Mut.TLabel")
+            dlbl.show(u"")
             dbtn.pack_forget()
             refresh()
             fit()
@@ -3451,33 +3669,30 @@ def run_app():
         fit()
         p = distv.get()
         if not p:
-            dlbl.config(text=u"Список не выбран. Нажмите одну из кнопок ниже.",
-                        style="Amb.TLabel")
+            dlbl.show(u"Список не выбран. Нажмите одну из кнопок ниже.",
+                      "Amb.TLabel")
             refresh()
             return
-        dlbl.config(text=u"%s · %d позиций · %s исключена из получателей\n"
+        dlbl.show(u"%s · %d позиций · %s исключена из получателей\n"
                          u"результат ляжет в ЗАКАЗЫ\\<дата>%s, "
                          u"обычный заказ не затрагивается"
                          % (os.path.basename(p.rstrip("\\/")), dist_count(p),
                             DIST_SOURCE_SHOP, DIST_DIR_SUFFIX),
-                    style="Grn.TLabel")
+                  "Grn.TLabel")
         refresh()
 
     ttk.Radiobutton(mode, variable=mode_v, value=0, command=mode_sync,
                     text=u"Обычный заказ: РЦ → магазины"
                     ).pack(anchor="w", pady=(8, 0))
-    hint(mode, u"Каждый день. Потребность каждого магазина по ведомости, "
-               u"магазины и куст определяются по файлу.", padx=(24, 0))
+    hint(mode, u"Каждый день: потребность каждого магазина по ведомости.",
+         padx=(24, 0))
     ttk.Radiobutton(mode, variable=mode_v, value=1, command=mode_sync,
                     text=u"Раздача с Полевой по списку"
                     ).pack(anchor="w", pady=(8, 0))
-    hint(mode, u"Когда с %s нужно раздать по магазинам конкретный товар. "
-               u"Укажите список: файл Вывоз_ДД.ММ.ГГГГ.xlsx, папку ВЫВОЗ_<дата> "
-               u"или txt/csv «штрих-код;количество»." % DIST_SOURCE_SHOP,
-         padx=(24, 0))
-    dlbl = ttk.Label(mode, text=u"", style="Mut.TLabel", justify="left",
-                     wraplength=576)
-    dlbl.pack(anchor="w", padx=(24, 0))
+    dhint = hint(mode, u"Раздать с %s конкретный товар: файл Вывоз_ДД.ММ.ГГГГ.xlsx, "
+                       u"папка ВЫВОЗ_<дата> или txt/csv «штрих-код;количество»."
+                       % DIST_SOURCE_SHOP, padx=(24, 0))
+    dlbl = opt_label(dhint, "Mut.TLabel", padx=(24, 0))
     dbtn = ttk.Frame(mode)
     ttk.Button(dbtn, text=u"Выбрать файл со списком…", padding=(10, 4),
                command=lambda: dist_pick()).pack(side="left")
@@ -3488,20 +3703,18 @@ def run_app():
     opt.pack(fill="x", pady=(2, 0))
     clean_v, arch_v = tk.IntVar(value=1), tk.IntVar(value=1)
     ttk.Checkbutton(opt, variable=clean_v,
-                    text=u"Прежний расчёт за этот день убрать в ЗАКАЗЫ\\_замененные"
-                    ).pack(anchor="w")
-    hint(opt, u"чтобы в папке дня не остался старый txt магазина. "
-              u"Ничего не удаляется, вернуть можно.", padx=(24, 0), pady=(0, 4))
+                    text=u"Прежний расчёт этого дня убрать в ЗАКАЗЫ\\_замененные "
+                         u"(не удаляется)"
+                    ).pack(anchor="w", pady=1)
     ttk.Checkbutton(opt, variable=arch_v,
-                    text=u"После расчёта перенести ведомость в АРХИВ"
-                    ).pack(anchor="w")
-    hint(opt, u"чтобы в следующий раз в ВХОД не подставился старый файл.",
-         padx=(24, 0))
+                    text=u"После расчёта перенести ведомость в АРХИВ "
+                         u"(чтобы старый файл не подставился завтра)"
+                    ).pack(anchor="w", pady=1)
 
     # кнопки пакуются раньше шагов: если окно ниже содержимого,
     # обрезается текст шагов, а не «Рассчитать заказ»
     foot = ttk.Frame(root, padding=(0, 12, 0, 16))
-    foot.pack(fill="x", side="bottom", before=setup)
+    foot.pack(fill="x", side="bottom", before=holder)
     go_b = ttk.Button(foot, text=u"Рассчитать заказ", style=ACC, padding=(18, 8))
     go_b.pack(side="right")
     ttk.Button(foot, text=u"Закрыть", command=app.destroy,
@@ -3510,8 +3723,10 @@ def run_app():
                       justify="left")
     why_l.pack(side="left")
 
-    srcv = tk.StringVar()
     origin = [""]
+
+    def picked():
+        return [(e, src[e].get()) for e in ("FM", "UA") if src[e].get()]
 
     def parse_dv():
         t = dv.get().strip().replace("/", ".").replace("-", ".")
@@ -3530,16 +3745,20 @@ def run_app():
 
     def refresh(*_a):
         d = parse_dv()
-        why = (u"Выберите ведомость (шаг 1)" if not srcv.get() else
+        wrong = [e for e in ("FM", "UA") if src[e].get() and bad[e]]
+        why = (u"Выберите ведомость (шаг 1)" if not picked() else
+               u"Не та ведомость в строке %s (шаг 1)" % ENTITY_LABEL[wrong[0]]
+               if wrong else
                u"Исправьте дату (шаг 2)" if d is None else
+               u"Раздача считается по одной ведомости: уберите вторую (шаг 1)"
+               if mode_v.get() and len(picked()) > 1 else
                u"Выберите список для раздачи (шаг 3)"
                if mode_v.get() and not distv.get() else u"")
         go_b.state(["disabled"] if why else ["!disabled"])
         why_l.config(text=why)
         if d is None:
             route_l.config(text=u"")
-            warn_l.config(text=u"Дата не понята. Нужен вид 07.09.2026",
-                          style="Red.TLabel")
+            warn_l.show(u"Дата не понята. Нужен вид 07.09.2026", "Red.TLabel")
             return
         rk = ROUTE_BY_DOW.get(d.weekday())
         if rk:
@@ -3550,62 +3769,90 @@ def run_app():
         else:
             route_l.config(text=u"Воскресенье — по графику отгрузки нет")
         msgs = []
-        _d, n, ts = day_dir_state(d)
-        if n:
-            msgs.append(u"За %s расчёт уже делали %s — %d магазинов. "
-                        u"Прежний уберём в папку замен."
-                        % (human(d), ts.strftime("%d.%m в %H:%M") if ts else "?", n))
+        for e, _p in picked():
+            _d, n, ts = day_dir_state(d, ENTITY_DIR_SUFFIX[e])
+            if n:
+                msgs.append(u"%s: за %s расчёт уже делали %s — %d магазинов. "
+                            u"Прежний уберём в папку замен."
+                            % (ENTITY_LABEL[e], human(d),
+                               ts.strftime("%d.%m в %H:%M") if ts else "?", n))
         off = (d - date.today()).days
         if abs(off) > DATE_SANITY_DAYS:
             msgs.append(u"Это %s от сегодняшнего дня — проверьте, тот ли файл."
                         % (u"на %d дн. вперёд" % off if off > 0
                            else u"на %d дн. назад" % -off))
-        warn_l.config(text=u"\n".join(msgs), style="Amb.TLabel")
+        warn_l.show(u"\n".join(msgs), "Amb.TLabel")
 
-    def load(path):
-        srcv.set(path or "")
-        if not path:
-            fname.config(text=u"файл не выбран")
-            fdir.config(text=u"")
-            fstamp.config(text=u"В папке ВХОД ведомости нет. "
-                               u"Нажмите «Выбрать ведомость…»",
-                          style="Amb.TLabel")
-            fprev.config(text=u"")
+    def set_date():
+        """Дата из имени ведомости Family, если её нет - из ведомости ЮА."""
+        p = src["FM"].get() or src["UA"].get()
+        if not p:
             dv.set("")
-            refresh()
+            dorig.config(text=u"")
             return
-        fname.config(text=os.path.basename(path))
-        fdir.config(text=os.path.dirname(path))
-        g, o = guess_day(path)
+        g, o = guess_day(p)
         origin[0] = o
         dv.set(g.strftime("%d.%m.%Y"))
         dorig.config(text={u"из имени файла": u"взято из названия файла"}.get(o, o))
+
+    def load(ent, path):
+        src[ent].set(path or "")
+        nm, info, warn = rows[ent]
+        bad[ent] = u""
+        warn.show(u"")
+        if not path:
+            nm.config(text=u"не выбрана")
+            info.config(text=(u"В папке ВХОД ведомости нет. Нажмите «Выбрать ведомость…»"
+                              if ent == "FM" else
+                              u"Нужна, только если в этот день везём в магазины ЮА "
+                              u"(в Центре учета «… ЮА»)"), style="Mut.TLabel")
+            set_date()
+            refresh()
+            return
+        where = (u"" if os.path.normcase(os.path.dirname(path))
+                 == os.path.normcase(IN_DIR) else u"\nпапка: " + os.path.dirname(path))
+        nm.config(text=os.path.basename(path))
         stamp = read_export_stamp(path)
         if stamp:
             age = (datetime.now() - stamp).total_seconds() / 3600.0
             when = (u"%.0f ч назад" % age if age < 48
                     else u"%.0f дн. назад" % (age / 24.0))
-            fstamp.config(
-                text=u"Выгружено из Торгсофта %s, это %s"
-                     % (stamp.strftime("%d.%m.%Y в %H:%M"), when),
+            info.config(
+                text=u"Выгружено из Торгсофта %s, это %s%s"
+                     % (stamp.strftime("%d.%m.%Y в %H:%M"), when, where),
                 style="Amb.TLabel" if age > STALE_EXPORT_HOURS else "Grn.TLabel")
         else:
-            fstamp.config(text=u"В файле не записано, когда его выгрузили",
-                          style="Mut.TLabel")
+            info.config(text=u"В файле не записано, когда его выгрузили" + where,
+                        style="Mut.TLabel")
+        got = file_entity(path)
+        if got == "MIX":
+            bad[ent] = (u"В файле магазины обеих баз. Выгрузите ведомость "
+                        u"каждой базы отдельно")
+        elif got and got != ent:
+            bad[ent] = (u"Это ведомость базы %s (у магазинов %s «%s» в конце) - "
+                        u"выберите её в строке %s"
+                        % (ENTITY_LABEL[got], u"есть" if got == "UA" else u"нет",
+                           UA_SHOP_SUFFIX, ENTITY_LABEL[got]))
+        elif ent == "UA" and path == src["FM"].get():
+            bad[ent] = u"Этот же файл выбран в строке Family"
         pv = history_same_file(source_fingerprint(path))
-        fprev.config(text=(u"Этот же файл уже считали %s — заказ лёг в папку %s"
-                           % (pv["run"], pv["day"])) if pv else u"")
+        warn.show(u"\n".join(x for x in (
+            bad[ent],
+            (u"Этот же файл уже считали %s — заказ лёг в папку %s"
+             % (pv["run"], pv["day"])) if pv else u"") if x))
+        set_date()
         refresh()
 
-    def choose():
-        cur = srcv.get()
+    def choose(ent):
+        cur = src[ent].get() or src["FM"].get()
         f = filedialog.askopenfilename(
-            parent=app, title=u"Выберите оборотную ведомость из Торгсофта",
+            parent=app, title=u"Оборотная ведомость из базы %s" % ENTITY_LABEL[ent],
             initialdir=(os.path.dirname(cur) if cur
                         else (IN_DIR if os.path.isdir(IN_DIR) else BASE_DIR)),
             filetypes=[(u"Книги Excel", "*.xlsx *.xlsm"), (u"Все файлы", "*.*")])
         if f:
-            load(os.path.abspath(f))
+            load(ent, os.path.abspath(f))
+            fit()
 
     dv.trace_add("write", refresh)
 
@@ -3649,21 +3896,24 @@ def run_app():
     running = [False]
 
     def start():
-        global GUI_CHOICE, DIST_FILE
+        global GUI_CHOICE, GUI_SOURCES, DIST_FILE
         d = parse_dv()
         if running[0] or "disabled" in go_b.state():
             return
         running[0] = True
         DIST_FILE = distv.get() if mode_v.get() else ""
-        GUI_CHOICE = (srcv.get(), d, bool(clean_v.get()), bool(arch_v.get()),
-                      origin[0])
-        setup.pack_forget()
+        GUI_SOURCES = picked()
+        GUI_CHOICE = (GUI_SOURCES[0][1], d, bool(clean_v.get()),
+                      bool(arch_v.get()), origin[0])
+        holder.pack_forget()
+        app.unbind_all("<MouseWheel>")
         for w_ in foot.winfo_children():
             w_.destroy()
         work.pack(fill="both", expand=True, pady=(16, 0))
         wcap.config(text=u"Считаю…")
         wsub.config(text=u"%s · везём на %s"
-                         % (os.path.basename(srcv.get()), human(d)))
+                         % (u" + ".join(os.path.basename(p_)
+                                        for _e, p_ in GUI_SOURCES), human(d)))
         bar.start(12)
         txt.configure(state="normal")
         txt.delete("1.0", "end")
@@ -3712,39 +3962,69 @@ def run_app():
     def finish(code):
         bar.stop()
         bar.pack_forget()
-        ne, nw = len(R.errors), len(R.warns)
-        i = RUN_INFO
-        if code == 0 and not ne and i:
+        jobs = RUN_INFO.get("jobs", [])
+        ok = [j for j in jobs if j["code"] == 0 and not j["errors"]
+              and j.get("day_dir")]
+        lines = []
+        for j in jobs:
+            lab = ENTITY_LABEL.get(j["entity"], u"")
+            if j in ok:
+                lines.append(u"%s: %d магазинов из %d · %d позиций · %s единиц · "
+                             u"предупреждений %d\n%s%s"
+                             % (lab, j["shops"], j["shops_all"], j["positions"],
+                                j["units"], j["warns"], j["day_dir"],
+                                j.get("dist_txt", u"")))
+            elif j["code"] == 0 and not j["errors"]:
+                lines.append(u"%s: заказывать нечего, предупреждений %d"
+                             % (lab, j["warns"]))
+            elif j.get("day_dir"):
+                lines.append(u"%s: ошибок %d - файлы записаны, но проверку не прошли, "
+                             u"в ТСД не заливать\n%s"
+                             % (lab, j["errors"], j["day_dir"]))
+            else:
+                lines.append(u"%s: файлы не записаны — ошибок %d, предупреждений %d"
+                             % (lab, j["errors"], j["warns"]))
+        fail = [j for j in jobs if j["code"] or j["errors"]]
+        if not fail and ok:
             wcap.config(text=u"Готово", foreground=GRN)
-            wsub.config(text=u"%d магазинов из %d · %d позиций · %s единиц\n"
-                             u"Предупреждений %d, ошибок нет\n%s"
-                             % (i["shops"], i["shops_all"], i["positions"],
-                                i["units"], nw, i["day_dir"]) + i.get("dist_txt", u""))
-            nxt = (u"Что дальше: 1) «Открыть отчёт проверки» - просмотрите жёлтые строки "
-                   u"(предупреждения); 2) «Открыть папку с заказами» - в папке "
-                   u"каждого магазина xlsx для печати и txt для ТСД.")
+        elif fail and ok:
+            wcap.config(text=u"Готово не всё", foreground=AMB)
+        elif fail:
+            wcap.config(text=u"Есть ошибки", foreground=RED)
         else:
-            wcap.config(text=u"Файлы не записаны", foreground=RED)
-            wsub.config(text=u"Ошибок %d, предупреждений %d. Что именно не так — "
-                             u"в списке выше и в отчёте." % (ne, nw))
-            nxt = (u"Что дальше: красные строки в списке выше - причина. "
-                   u"Тот же отчёт лежит в папке ЛОГИ (ВАЛИДАЦИЯ_СБОЙ_…xlsx). "
-                   u"Исправьте файл и запустите программу ещё раз.")
-        ttk.Label(work, text=nxt, style="Mut.TLabel", wraplength=640,
-                  justify="left").pack(anchor="w", pady=(8, 0))
+            wcap.config(text=u"Заказывать нечего", foreground=AMB)
+        wsub.config(text=u"\n".join(lines))
+        nxt = []
+        if ok:
+            nxt.append(u"Отчёт проверки (_ВАЛИДАЦИЯ.xlsx в папке заказов) - "
+                       u"просмотрите жёлтые строки. В папке каждого магазина xlsx "
+                       u"для печати и txt для ТСД; txt базы ЮА заливаются из базы ЮА.")
+        if fail:
+            nxt.append(u"Где ошибки: причина - красные строки в списке выше; "
+                       u"отчёт - _ВАЛИДАЦИЯ.xlsx в папке результата или "
+                       u"ВАЛИДАЦИЯ_СБОЙ_…xlsx в папке ЛОГИ. Исправьте файл и "
+                       u"запустите программу ещё раз.")
+        ttk.Label(work, text=u"Что дальше: " + u"\n".join(nxt), style="Mut.TLabel",
+                  wraplength=640, justify="left").pack(anchor="w", pady=(8, 0))
         f2 = ttk.Frame(root, padding=(0, 12, 0, 18))
         f2.pack(fill="x", side="bottom")
-        if i:
+        if len(ok) == 1:
+            i = ok[0]
             ttk.Button(f2, text=u"Открыть папку с заказами", style=ACC,
                        padding=(18, 8),
                        command=lambda: open_path(i["day_dir"])).pack(side="right")
-            ttk.Button(f2, text=u"Открыть отчёт проверки", padding=(14, 8),
+            ttk.Button(f2, text=u"Отчёт проверки", padding=(14, 8),
                        command=lambda: open_path(i["validation"])).pack(
                            side="right", padx=(0, 10))
-        else:
-            ttk.Button(f2, text=u"Открыть папку ЛОГИ", style=ACC,
-                       padding=(18, 8),
-                       command=lambda: open_path(LOG_DIR)).pack(side="right")
+        for i in reversed(ok if len(ok) > 1 else []):
+            ttk.Button(f2, text=u"Заказы %s" % ENTITY_LABEL[i["entity"]],
+                       style=ACC, padding=(14, 8),
+                       command=lambda i=i: open_path(i["day_dir"])).pack(
+                           side="right", padx=(10, 0))
+        if any(not j.get("day_dir") for j in fail):
+            ttk.Button(f2, text=u"Папка ЛОГИ", padding=(14, 8),
+                       command=lambda: open_path(LOG_DIR)).pack(
+                           side="right", padx=(0, 10))
         ttk.Button(f2, text=u"Закрыть", command=app.destroy,
                    padding=(14, 8)).pack(side="right", padx=(0, 10))
 
@@ -3752,7 +4032,9 @@ def run_app():
     app.bind("<Return>", lambda e: start())
     ensure_dirs()
     mode_sync()
-    load(find_source_file(quiet=True))
+    found = find_sources_by_entity(quiet=True)
+    load("FM", found.get("FM", ""))
+    load("UA", found.get("UA", ""))
     app.update_idletasks()
     w_ = 720
     h_ = min(max(600, app.winfo_reqheight()), app.winfo_screenheight() - 60)
