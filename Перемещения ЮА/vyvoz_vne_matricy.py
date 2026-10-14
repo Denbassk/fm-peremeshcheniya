@@ -1615,22 +1615,26 @@ def _read_txt_dict(path, problems, label):
     return got
 
 
-def verify_inventory(shop_dir, fname, inv_rows):
-    """Лист «Перевести на ЮА» и txt инвентаризации перечитываются и сверяются с расчётом."""
+def verify_inventory(shop_dir, fname, inv_rows, txt_rows=None):
+    """Лист «Перевести на ЮА» и txt инвентаризации перечитываются и сверяются с расчётом. txt_rows - строки, что пошли в txt
+    (без позиций с некорректным ШК); по умолчанию все inv_rows."""
     problems = []
+    txt_rows = inv_rows if txt_rows is None else txt_rows
     expected = {r.bc: round(float(r.qty), 3) for r in inv_rows.itertuples()}                 # лист: по ШК Family
-    expected_txt = {r.inv_bc: round(float(r.qty), 3) for r in inventory_file_rows(inv_rows).itertuples()}   # txt: по ШК ЮА
+    expected_txt = {r.inv_bc: round(float(r.qty), 3) for r in inventory_file_rows(txt_rows).itertuples()} if len(txt_rows) else {}
     wb = load_workbook(os.path.join(shop_dir, fname + ".xlsx"), data_only=True)
     ws = wb[SHEET_INV]
-    got, r = {}, 2
-    while ws.cell(row=r, column=1).value not in (None, ""):
+    got = {}
+    for r in range(2, ws.max_row + 1):                  # до конца листа: строка с пустым ШК не обрывает сверку
+        if all(ws.cell(row=r, column=j).value in (None, "") for j in (1, 2, 3)):
+            continue
         q = ws.cell(row=r, column=3).value
         got[rz.fmt_barcode(ws.cell(row=r, column=1).value)] = round(float(q), 3) if isinstance(q, (int, float)) else None
-        r += 1
     wb.close()
+    expected = {rz.fmt_barcode(k): v for k, v in expected.items()}
     if got != expected:
         problems.append(u"лист «%s»: расхождений %d" % (SHEET_INV, len(set(expected.items()) ^ set(got.items()))))
-    if expected:
+    if expected_txt:
         tg = _read_txt_dict(os.path.join(shop_dir, fname + INV_TXT_SUFFIX), problems, u"txt инвентаризации")
         if tg != expected_txt:
             problems.append(u"txt инвентаризации: расхождений %d" % len(set(expected_txt.items()) ^ set(tg.items())))
@@ -1907,12 +1911,18 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
                                "is_weight": [(str(u).lower() in (u"кг", u"kg")) for u in v["unit"]]})
             rz.write_shop_txt(os.path.join(shop_dir, nm + ".txt"), tr)
         iv = inventory_rows(res)
-        if len(iv):
-            ivg = inventory_file_rows(iv)
+        iv_ok = iv[iv["inv_bc"].map(lambda b_: bool(RE_BC_OK.match(str(b_))))]
+        if len(iv_ok) < len(iv):                          # такой ШК не загрузить ни в ТСД, ни в ЮА: строку в txt не пишем
+            bad_ = iv[~iv.index.isin(iv_ok.index)]
+            R.check("WARN", u"%s: инвентаризация ЮА - некорректный ШК" % shop,
+                    u"%d поз. не попали в txt (ШК не 6-14 цифр), они есть на листе «%s»: %s"
+                    % (len(bad_), SHEET_INV, u"; ".join(u"%s %s" % (b_, n_) for b_, n_ in zip(bad_["bc"], bad_["name"]))[:300]))
+        if len(iv_ok):
+            ivg = inventory_file_rows(iv_ok)
             ir = pd.DataFrame({"bc": ivg["inv_bc"].values, "qty": ivg["qty"].values, "step": 1.0,
                                "is_weight": [(str(u).lower() in (u"кг", u"kg")) for u in ivg["unit"]]})
             rz.write_shop_txt(os.path.join(shop_dir, nm + INV_TXT_SUFFIX), ir)
-        probs = verify_vyvoz(shop_dir, nm, v) + verify_inventory(shop_dir, nm, iv)
+        probs = verify_vyvoz(shop_dir, nm, v) + verify_inventory(shop_dir, nm, iv, iv_ok)
         if probs:
             entry["status"] = u"ОШИБ: сверка файлов: " + "; ".join(probs)
             R.check("ERROR", u"%s: обратная сверка" % shop, "; ".join(probs))
@@ -2776,6 +2786,7 @@ def _self_test_body(gui=False):
         shutil.rmtree(tp_, ignore_errors=True)
     _selftest_split_update(ck)
     _selftest_split_guard(ck)
+    _selftest_bad_bc(ck)
     _selftest_kegs(ck)
     _selftest_split_min(ck)
     _selftest_manual_rules(ck)
@@ -3021,6 +3032,33 @@ def _write_vyvoz_list_xlsx(path, shop, day_str, rows):
     ws.cell(row=r + 1, column=7, value=99999.99)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     wb.save(path)
+
+
+def _selftest_bad_bc(ck):
+    """Позиция, что остаётся на полке, с некорректным ШК («П-001»): в txt инвентаризации не пишется, магазин не получает ОШИБ."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_badbc_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        ref_ = make_ref(pd.DataFrame([(_ean("482000000001"), u"Пиво", u"ok", u"П")], columns=["barcode", "product_name", "status", "supplier"]),
+                        None, None, pd.DataFrame([(bc_key(_ean("482000000001")), u"Пиво", u"склад ЮА")], columns=["key", "name", "src"]), None)
+        _write_state_xlsx(os.path.join(d.stores, u"Состояние склада Магазин П 08.10.2026.xlsx"), u"Магазин П",
+                          [(u"П-001", u"Пакет фасовочний", 300, u"шт", 0.1), (_ean("482000000888"), u"Сувенир", 5, u"шт", 10.0),
+                           (_ean("482000000001"), u"Пиво", 4, u"шт", 20.0)])
+        _write_state_xlsx(os.path.join(d.ua_wh, u"Состояние склада Полевая склад ЮА 08.10.2026.xlsx"), u"Полевая-Склад ЮА",
+                          [(_ean("482000000001"), u"Пиво", 1, u"шт", 1.0)])
+        out_ = run_vyvoz(d, shops=[u"Магазин П"], ref=ref_, keep_keys=set(), excl_suppliers=set())
+        st_ = out_["shops"][0]["status"] if out_.get("shops") else u"нет"
+        fp_ = os.path.join(out_.get("day_dir") or tmp, u"Магазин П", u"Магазин П" + INV_TXT_SUFFIX)
+        lines_ = []
+        if os.path.isfile(fp_):
+            with open(fp_, "rb") as f_:
+                lines_ = [x for x in f_.read().decode("cp1251").split("\r\n") if x]
+        ck(st_ == "OK" and lines_ == [u"%s;4" % _ean("482000000001")],
+           "некорректный ШК не ломает магазин и не идёт в txt инвентаризации: %s %s" % (st_, lines_))
+        ck(any(u"некорректный ШК" in n_ for _s, n_, _d in R.checks), "некорректный ШК в инвентаризации: предупреждение")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _selftest_split_guard(ck):
