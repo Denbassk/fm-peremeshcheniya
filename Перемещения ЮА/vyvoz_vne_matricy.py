@@ -127,12 +127,13 @@ class Dirs(object):
         self.ua_wh = os.path.join(self.inp, u"СКЛАД_ЮА")
         self.ua_stores = os.path.join(self.inp, u"МАГАЗИНЫ_ЮА")
         self.ua_receipts = os.path.join(self.inp, u"ПРИХОДЫ_ЮА")
+        self.ua_base = os.path.join(self.inp, u"БАЗА_ЮА")          # «Состояние склада» всех товаров по всем точкам ЮА
         self.out = os.path.join(base, u"ВЫВОЗ")
         self.cache = os.path.join(base, u"Справочник")
         self.logs = os.path.join(base, u"ЛОГИ")
 
     def ensure(self):
-        for p in (self.stores, self.ua_wh, self.ua_stores, self.ua_receipts,
+        for p in (self.stores, self.ua_wh, self.ua_stores, self.ua_receipts, self.ua_base,
                   self.out, self.cache, self.logs):
             os.makedirs(p, exist_ok=True)
 
@@ -412,7 +413,7 @@ def read_receipts_file(path):
 
 
 UA_SRC_RANK = ((u"поставщик", 0), (u"магазин ЮА", 1), (u"приход в файле не найден", 2), (u"склад ЮА", 2),
-               (u"комплектация", 3), (u"инвентаризац", 4))
+               (u"комплектация", 3), (u"инвентаризац", 4), (u"база ЮА", 4))
 
 
 def _src_rank(s):
@@ -513,6 +514,24 @@ def load_ua(dirs, use_ua=True):
         R.check("OK", u"Магазины в базе ЮА", u"%d строк" % info["shops_rows"])
     else:
         R.check("INFO", u"Магазины в базе ЮА", u"выгрузок нет (магазин ещё не перешёл на ЮА)")
+    files = list_xlsx(getattr(dirs, "ua_base", u"") or u"")
+    if files:                                   # полная база ЮА: карточка есть (в т.ч. ноль/минус) = товар на ЮА заведён
+        p = _pick_latest(files)
+        try:
+            df, meta = read_state_file(p)
+        except Exception as e:
+            R.check("WARN", u"База ЮА: чтение", u"%s: %s" % (os.path.basename(p), e))
+        else:
+            inv_only = inv - sup - com
+            srcs = [u"база ЮА (только инвентаризация)" if k in inv_only else u"база ЮА (карточка)" for k in df["key"]]
+            parts.append(pd.DataFrame({"key": df["key"], "name": df["name"], "src": srcs, "bc": df["bc"]}))
+            info["base_rows"] = len(df)
+            check_fresh(u"база ЮА", p)
+            R.check("OK", u"База ЮА (все карточки)", u"%s: %d строк, %d ШК, точки: %s"
+                    % (os.path.basename(p), len(df), df["key"].nunique(), u", ".join(sorted(set(df["shop"])))))
+    else:
+        R.check("INFO", u"База ЮА (все карточки)",
+                u"выгрузки нет в %s: «заведено на ЮА» видно только по складу, магазинам и приходам ЮА" % getattr(dirs, "ua_base", u""))
     ua = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["key", "name", "src", "bc"])
     ua["bc"] = ua["bc"].fillna(u"") if "bc" in ua.columns else u""
     ua = ua[ua["key"] != ""]
@@ -2711,6 +2730,7 @@ def self_test(gui=False):
     _selftest_sweep(ck)
     _selftest_window(ck)
     _selftest_map(ck)
+    _selftest_ua_base(ck)
 
     reset_report()
     if fails:
@@ -2822,6 +2842,29 @@ def _selftest_map(ck):
            % (r_rc["verdict"].iloc[0], r_rc["inv_bc"].iloc[0], r_rc["reason"].iloc[0]))
     finally:
         g_["fetch_family_keys"] = saved_fk
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_ua_base(ck):
+    """Полная база ЮА (ВХОД_ВЫВОЗ\\БАЗА_ЮА): карточка с нулём, которой нет на складе ЮА, считается заведённой на ЮА."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_base_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        A, B = _ean("482006000011"), _ean("482006000028")
+        _write_state_xlsx(os.path.join(d.ua_wh, u"Состояние склада Полевая склад ЮА 08.10.2026.xlsx"), u"Полевая-Склад ЮА",
+                          [(A, u"Тест Товар А", 4, u"шт", 10.0)], shop_name=u"Полевая-Склад ЮА")
+        reset_report()
+        ua0, _i0 = load_ua(d)
+        _write_state_xlsx(os.path.join(d.ua_base, u"База ЮА 09.10.2026.xlsx"), u"Качанівська 19 ЮА",
+                          [(A, u"Тест Товар А", 0, u"шт", 10.0), (B, u"Тест Товар Б", 0, u"шт", 20.0)], shop_name=u"Качанівська 19 ЮА")
+        reset_report()
+        ua1, i1 = load_ua(d)
+        src1 = dict(zip(ua1.drop_duplicates("key")["key"], ua1.drop_duplicates("key")["src"]))
+        ck(bc_key(B) not in set(ua0["key"]) and src1.get(bc_key(B)) == u"база ЮА (карточка)" and i1.get("base_rows") == 2,
+           "база ЮА: карточка с нулём, которой нет на складе, - заведена на ЮА: %s" % src1)
+        ck(src1.get(bc_key(A), u"").startswith(u"склад ЮА"), "база ЮА: у товара со склада источник остаётся «склад ЮА»: %s" % src1.get(bc_key(A)))
+    finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
