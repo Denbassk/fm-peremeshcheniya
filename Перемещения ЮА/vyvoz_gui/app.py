@@ -122,14 +122,14 @@ class ServicePage(Page):
         self.font_group = QButtonGroup(self)
         for mode, text in T.FONT_MODES:
             rb = QRadioButton(text)
-            rb.setProperty("font", mode)
+            rb.setProperty("font_mode", mode)          # не «font»: это встроенное свойство QWidget (шрифт кнопки)
             rb.setChecked(win.themes.font_mode == mode)
             self.font_group.addButton(rb)
             row.addWidget(rb)
         row.addWidget(help_button(u"Сравните, какой шрифт на вашем экране чётче. Выбор запоминается. Какой шрифт окно "
                                   u"рисует на самом деле, пишется в «Журнал» при запуске и при смене.", u"Шрифт"))
         row.addStretch(1)
-        self.font_group.buttonClicked.connect(lambda b: self._set_font(b.property("font")))
+        self.font_group.buttonClicked.connect(lambda b: self._set_font(b.property("font_mode")))
         c.lay.addLayout(row)
         self.body.addWidget(c)
 
@@ -428,7 +428,12 @@ def run(core, dirs=None, test_mode=False, settings=None):
         for k in win.pages:
             win.show_page(k)
         sp = win.pages["split"]
-        res = {"keys": sorted(win.pages), "font": themes.font_report(),
+        fm0, fsw = themes.font_mode, {}                     # переключатель шрифта в «Сервисе»: нажатие меняет выбор
+        for b_ in win.pages["serv"].font_group.buttons():
+            b_.click()
+            fsw[b_.property("font_mode")] = themes.font_mode
+        themes.set_font(fm0)
+        res = {"keys": sorted(win.pages), "font": themes.font_report(), "font_switch": fsw,
                "targets": [sp.one_cb.itemText(i) for i in range(sp.one_cb.count())],
                "targets_want": core.split_targets(dirs, sp.chk["shop"] if sp.chk and sp.chk.get("ok") else None)}
         win.close()
