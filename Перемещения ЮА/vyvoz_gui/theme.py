@@ -1,4 +1,6 @@
 """Светлая и тёмная тема (QSS из токенов) и выбор «Светлая / Тёмная / Как в Windows» с запоминанием (QSettings)."""
+import re
+
 from PySide6.QtCore import QObject, QSettings, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 
@@ -10,9 +12,17 @@ MODES = (("light", u"Светлая"), ("dark", u"Тёмная"), ("system", u"�
 DEFAULT_MODE = "light"          # решение владельца 14.10.2026: в магазинах привыкли к светлой, списки печатаются на светлом
 
 
-def build_qss(c, check_png=u"", family=T.FONT, arrow_dn=u"", arrow_up=u""):
+def build_qss(c, check_png=u"", family=T.FONT, arrow_dn=u"", arrow_up=u"", scale=1.0):
     """Полная таблица стилей для палитры c (tokens.LIGHT или tokens.DARK). check_png - картинка галочки (assets.check_png).
-    family - шрифт из «Сервиса»; хинтинг QSS не задаёт: он берётся из шрифта приложения (assets.ui_font)."""
+    family - шрифт из «Сервиса»; хинтинг QSS не задаёт: он берётся из шрифта приложения (assets.ui_font).
+    scale - размер шрифта из «Сервиса» (основной px / 14): все font-size умножаются на него, отступы не меняются."""
+    qss = _build_qss(c, check_png, family, arrow_dn, arrow_up)
+    if abs(scale - 1.0) < 1e-6:
+        return qss
+    return re.sub(r"font-size: (\d+)px", lambda m: u"font-size: %dpx" % max(9, int(round(int(m.group(1)) * scale))), qss)
+
+
+def _build_qss(c, check_png, family, arrow_dn, arrow_up):
     b, s = T.TYPO_BODY_MD[0], T.TYPO_BODY_SM[0]
     return f"""
 * {{ font-family: "{family}", "{T.FONT_FALLBACK}"; font-size: {b}px; }}
@@ -142,6 +152,8 @@ class ThemeManager(QObject):
         self.mode = m if m in dict(MODES) else DEFAULT_MODE
         f = str(self.settings.value("font", FONT_DEFAULT))
         self.font_mode = f if f in dict(T.FONT_MODES) else FONT_DEFAULT
+        z = str(self.settings.value("font_size", T.FONT_SIZE_DEFAULT))
+        self.size_mode = z if z in [x[0] for x in T.FONT_SIZES] else T.FONT_SIZE_DEFAULT
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(lambda *_: self.mode == "system" and self.apply())
         except Exception:
@@ -172,6 +184,15 @@ class ThemeManager(QObject):
         self.settings.setValue("font", self.font_mode)
         self.apply()
 
+    def body_px(self):
+        """Основной размер шрифта (px), выбранный в «Сервисе»."""
+        return next(px for k, _t, px in T.FONT_SIZES if k == self.size_mode)
+
+    def set_size(self, mode):
+        self.size_mode = mode if mode in [x[0] for x in T.FONT_SIZES] else T.FONT_SIZE_DEFAULT
+        self.settings.setValue("font_size", self.size_mode)
+        self.apply()
+
     def font_report(self):
         from .assets import font_report
         return font_report(self.app.font(), self.family())
@@ -179,8 +200,8 @@ class ThemeManager(QObject):
     def apply(self):
         c = self.palette()
         from .assets import arrow_png, check_png, ui_font
-        f = ui_font(family=self.family())
+        f = ui_font(self.body_px(), family=self.family())
         self.app.setFont(f)
         self.app.setStyleSheet(build_qss(c, check_png(c["on_checked"]), f.family(), arrow_png(c["text_muted"]),
-                                         arrow_png(c["text_muted"], up=True)))
+                                         arrow_png(c["text_muted"], up=True), scale=self.body_px() / float(T.TYPO_BODY_MD[0])))
         self.changed.emit(c)

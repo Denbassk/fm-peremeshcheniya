@@ -131,6 +131,21 @@ class ServicePage(Page):
         row.addStretch(1)
         self.font_group.buttonClicked.connect(lambda b: self._set_font(b.property("font_mode")))
         c.lay.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(u"Размер шрифта:"))
+        self.size_group = QButtonGroup(self)
+        for mode, text, px in T.FONT_SIZES:
+            rb = QRadioButton(text)
+            rb.setProperty("size_mode", mode)
+            rb.setToolTip(u"%d px" % px)
+            rb.setChecked(win.themes.size_mode == mode)
+            self.size_group.addButton(rb)
+            row.addWidget(rb)
+        row.addWidget(help_button(u"Размер текста во всём окне. Выбор запоминается. При масштабе Windows 125-150 %% обычно "
+                                  u"удобнее «%s» или «%s»." % (T.FONT_SIZES[0][1], T.FONT_SIZES[1][1]), u"Размер шрифта"))
+        row.addStretch(1)
+        self.size_group.buttonClicked.connect(lambda b: self._set_size(b.property("size_mode")))
+        c.lay.addLayout(row)
         self.body.addWidget(c)
 
         c = Card(u"Проверка программы", u"Самотест проверяет расчёты на тестовых данных; подробности - в «Журнале».")
@@ -185,6 +200,10 @@ class ServicePage(Page):
         if dlg.exec() and dlg.saved is not None:
             self.win.status(u"Список раскомплектации сохранён: %d зап." % dlg.saved, "OK")
             self.win.journal(u"Раскомплектация", u"Сохранено записей: %d (Справочник\\%s)" % (dlg.saved, self.core.RAZKOMPL_FILE))
+
+    def _set_size(self, mode):
+        self.win.themes.set_size(mode)
+        self.win.status(u"Размер шрифта: %s" % dict((k, t) for k, t, _p in T.FONT_SIZES)[self.win.themes.size_mode], "OK")
 
     def _set_font(self, mode):
         self.win.themes.set_font(mode)
@@ -308,7 +327,7 @@ class MainWindow(QMainWindow):
         self.busy_widgets, self.worker = [], None
         self.setWindowTitle(u"Фемелі Маркет · Вывоз вне матрицы")
         self.setWindowIcon(A.app_icon())
-        self.setMinimumSize(960, 600)
+        self.setMinimumSize(960, 560)
         central = QWidget()
         central.setObjectName("content")
         self.setCentralWidget(central)
@@ -350,6 +369,13 @@ class MainWindow(QMainWindow):
         for i, key in enumerate(("vyvoz", "split", "upd", "fin", "serv", "log"), 1):
             QShortcut(QKeySequence("Ctrl+%d" % i), self, activated=lambda k=key: self.show_page(k))
         self.show_page("vyvoz")
+
+    def closeEvent(self, e):
+        try:                                                # размер и место окна - к следующему запуску
+            self.themes.settings.setValue("geometry", self.saveGeometry())
+        except Exception:
+            pass
+        super().closeEvent(e)
 
     def show_page(self, key):
         self.stack.setCurrentWidget(self.pages[key])
@@ -401,6 +427,27 @@ class MainWindow(QMainWindow):
         return True
 
 
+WIN_W, WIN_H, WIN_SCREEN = 1180, 760, 0.85     # окно при первом открытии: не больше 85 % свободной части экрана
+
+
+def place_window(win, settings):
+    """Размер и место окна: как при прошлом закрытии (если влезает на экран), иначе 1180x760 логических px, но не больше
+    85 % экрана (при масштабе Windows 150 % окно 1180x800 было больше экрана ноутбука), по центру."""
+    scr = win.screen() or QApplication.primaryScreen()
+    av = scr.availableGeometry() if scr else None
+    g = settings.value("geometry") if settings is not None else None
+    if g is not None and win.restoreGeometry(g):
+        if av is None or (av.contains(win.frameGeometry().center()) and win.width() <= av.width() and win.height() <= av.height()):
+            return
+    if av is None:
+        win.resize(WIN_W, WIN_H)
+        return
+    w = max(win.minimumWidth(), min(WIN_W, int(av.width() * WIN_SCREEN)))
+    h = max(win.minimumHeight(), min(WIN_H, int(av.height() * WIN_SCREEN)))
+    win.resize(min(w, av.width()), min(h, av.height()))
+    win.move(av.x() + (av.width() - win.width()) // 2, av.y() + (av.height() - win.height()) // 2)
+
+
 def make_app(argv=None):
     app = QApplication.instance() or QApplication(argv or sys.argv[:1])
     app.setApplicationName(u"Вывоз вне матрицы")
@@ -433,13 +480,20 @@ def run(core, dirs=None, test_mode=False, settings=None):
             b_.click()
             fsw[b_.property("font_mode")] = themes.font_mode
         themes.set_font(fm0)
-        res = {"keys": sorted(win.pages), "font": themes.font_report(), "font_switch": fsw,
+        sz0, ssw = themes.size_mode, {}                     # размер шрифта: нажатие меняет px шрифта приложения
+        for b_ in win.pages["serv"].size_group.buttons():
+            b_.click()
+            ssw[b_.property("size_mode")] = app.font().pixelSize()
+        themes.set_size(sz0)
+        place_window(win, themes.settings)
+        res = {"keys": sorted(win.pages), "font": themes.font_report(), "font_switch": fsw, "size_switch": ssw,
+               "geom": (win.width(), win.height()),
                "targets": [sp.one_cb.itemText(i) for i in range(sp.one_cb.count())],
                "targets_want": core.split_targets(dirs, sp.chk["shop"] if sp.chk and sp.chk.get("ok") else None)}
         win.close()
         win.deleteLater()
         return res
-    win.resize(1180, 800)
+    place_window(win, themes.settings)
     win.show()
     win.pages["vyvoz"].refresh()
     return app.exec()

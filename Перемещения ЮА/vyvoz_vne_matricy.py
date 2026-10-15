@@ -3105,6 +3105,8 @@ def _selftest_qt_window(ck, d):
         ck(u"хинтинг полный" in res_["font"], "окно PySide6: %s" % res_["font"])
         ck(res_.get("font_switch") == {"inter": "inter", "segoe": "segoe"},
            "окно PySide6: выбор шрифта в «Сервисе» переключается: %s" % res_.get("font_switch"))
+        ck(res_.get("size_switch") == {"s": 12, "m": 13, "l": 14},
+           "окно PySide6: размер шрифта в «Сервисе» переключается: %s" % res_.get("size_switch"))
         from vyvoz_gui import assets as qt_assets
         fp_ = qt_assets.load_fonts()
         ck(not fp_ and qt_assets.has_icons(), "окно PySide6: шрифты Inter и значки из assets\\fonts: %s" % (fp_,))
