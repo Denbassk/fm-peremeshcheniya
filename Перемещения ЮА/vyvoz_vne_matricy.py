@@ -2831,8 +2831,17 @@ def _self_test_body(gui=False):
     ck(decide_route("", "", "", "")[0] == KIND_RC, "маршрут: нет истории -> РЦ")
     ck(decide_route("2026-09-01", "2026-08-01", "", "")[0] == KIND_RC and decide_route("2026-08-01", "2026-09-01", "", "")[0] == KIND_SHOPS,
        "маршрут: по магазину берётся последнее поступление")
-    ck(decide_route("", "", "2026-04-01", "2026-09-01")[0] == KIND_RC and decide_route("", "", "", "2026-09-01")[0] == KIND_SHOPS,
-       "маршрут: по сети любой РЦ-приход = РЦ, иначе прямая")
+    ck(decide_route("", "", "2026-04-01", "2026-09-01")[0] == KIND_SHOPS and decide_route("", "", "2026-10-01", "2026-09-01")[0] == KIND_RC
+       and decide_route("", "", "", "2026-09-01")[0] == KIND_SHOPS and decide_route("", "", "2026-04-01", "")[0] == KIND_RC
+       and decide_route("", "", "2026-04-01", "0001-01-01")[0] == KIND_RC,
+       "маршрут: по сети берётся последнее поступление (старый РЦ-приход не перебивает свежие прямые)")
+    rkl_ = [(u"Монжар", u""), (u"Мак Кофе", u""), (u"Джамп", u""), (u"2978950038337", u"")]
+    ck(razkompl_match(rkl_, "2978950038337", u"Джелопі Морська Зірка", [u"ПОСТАВЩИК"]) == u"2978950038337"
+       and razkompl_match(rkl_, "4820000000001", u"Монжар Жувальна Цукерка (50) 1 шт", [u"ПОСТАВЩИК"]) == u"Монжар"
+       and razkompl_match(rkl_, "4820000000002", u"МакКофе Голд 3в1", [u""]) == u"Мак Кофе"
+       and razkompl_match(rkl_, "4820000000003", u"Кава Петрівська Слобода 100г", [u"Джамп"]) == u"Джамп"
+       and razkompl_match(rkl_, "4820017000833", u"Вода Моршинська 0,33л Спорт", [u"Моршин"]) == u"",
+       "раскомплектация: ШК, начало названия, без пробелов, поставщик; чужой товар не задевается")
     ck(decide_route("2026-09-01", "", "", "", KIND_SHOPS)[0] == KIND_SHOPS, "маршрут: поставщик из справочника важнее истории")
     sh3 = pd.Series({"A": 0.5, "B": 0.3, "C": 0.2})
     al1 = allocate_qty(10, sh3, 1.0)
@@ -4284,6 +4293,7 @@ TURNOVER_TABLE   = BQ_DATASET + ".turnover_transactions"
 TRANSFER_TABLE   = BQ_DATASET + ".transfer_all_transactions"
 UA_STORES_FILE   = u"vyvoz_ua_stores.csv"
 ROUTE_SUP_FILE   = u"vyvoz_route_suppliers.csv"
+RAZKOMPL_FILE    = u"vyvoz_razkompl.csv"     # раскомплектация: поставщик / начало названия / ШК -> всегда на точки
 KIND_RC, KIND_SHOPS = u"РЦ", u"Точки"
 EFF_DAYS         = 60                 # оценка «продастся ли»: продажи ШК на магазине за последние N дней (решение 14.10.2026)
 
@@ -4335,6 +4345,17 @@ DEFAULT_ROUTE_SUP = [
 ]
 
 
+DEFAULT_RAZKOMPL = [   # решение 15.10.2026: раскомплектованный товар не на склад, а по точкам. Имена - как в BigQuery на 15.10.2026
+    (u"Монжар", u"приходы и матрица: «Монжар»; ищется и в названии товара"),
+    (u"Агропром", u"приходы и матрица: «Агропром»; ищется и в названии товара"),
+    (u"Агропром ТОВ", u"приходы: «Агропром ТОВ»"),
+    (u"Мак Кофе", u"матрица: «Мак Кофе» (в приходах - Джамп, Кабаев); ищется и в названии (МакКофе)"),
+    (u"Джамп", u"приходы: «Джамп» - Петровская слобода, Мак Кофе"),
+    (u"Петрівська Слобода", u"название товара: часть приходов Джампа записана на «ПОСТАВЩИК»"),
+]
+RAZKOMPL_COLS = [u"Поставщик, начало названия или ШК", u"Комментарий"]
+
+
 def _csv_default(dirs, fname, rows, cols):
     path = os.path.join(dirs.cache, fname)
     if not os.path.isfile(path):
@@ -4370,6 +4391,52 @@ def load_route_suppliers(dirs):
         if sup_norm(s) and kk in (u"рц", u"точки"):
             out[sup_norm(s)] = KIND_RC if kk == u"рц" else KIND_SHOPS
     return out
+
+
+def _rk_norm(s):
+    """Для сравнения в списке раскомплектации: как sup_norm, плюс без пробелов («МакКофе» = «Мак Кофе»)."""
+    return sup_norm(s).replace(u" ", u"")
+
+
+def load_razkompl(dirs):
+    """Список «Раскомплектация -> на точки»: Справочник\\vyvoz_razkompl.csv -> [(запись как в файле, комментарий)].
+    Файла нет - создаётся со списком по умолчанию; файл можно править в окне («Сервис») или в Excel."""
+    df = _csv_default(dirs, RAZKOMPL_FILE, DEFAULT_RAZKOMPL, RAZKOMPL_COLS)
+    out = []
+    for i in range(len(df)):
+        e = str(df.iloc[i, 0]).strip()
+        if e and e.lower() not in ("nan", "none"):
+            out.append((e, str(df.iloc[i, 1]).strip() if df.shape[1] > 1 else u""))
+    return out
+
+
+def save_razkompl(dirs, rows):
+    """rows: [(запись, комментарий)] -> Справочник\\vyvoz_razkompl.csv (utf-8 с BOM, открывается в Excel). -> сколько записей"""
+    os.makedirs(dirs.cache, exist_ok=True)
+    seen, keep = set(), []
+    for e, c in rows:
+        e = str(e).strip()
+        if e and _rk_norm(e) not in seen:
+            seen.add(_rk_norm(e))
+            keep.append((e, str(c or u"").strip()))
+    pd.DataFrame(keep, columns=RAZKOMPL_COLS).to_csv(os.path.join(dirs.cache, RAZKOMPL_FILE), index=False, encoding="utf-8-sig")
+    return len(keep)
+
+
+def razkompl_match(entries, bc, name, sups):
+    """Позиция из списка раскомплектации? Запись из цифр - ШК (без ведущих нулей); иначе - поставщик (точно) или
+    слово в начале/внутри названия. sups - все известные поставщики позиции (матрица, последний приход). -> запись или ''."""
+    k, nm = bc_key(bc), _rk_norm(name)
+    sn = set(_rk_norm(x) for x in sups if x)
+    for e, _c in entries:
+        if e.isdigit():
+            if bc_key(e) == k:
+                return e
+            continue
+        en = _rk_norm(e)
+        if en and (en in sn or en in nm):
+            return e
+    return u""
 
 
 def read_corrected_list(path):
@@ -4431,17 +4498,19 @@ def read_corrected_list(path):
 def decide_route(shop_rc, shop_dir, net_rc, net_dir, sup_kind=None):
     """Куда везти позицию -> (вид, основание). Решение пользователя 06.10.2026:
     РЦ = отправитель «Полевая-Склад» в перемещениях, прямая = приход от поставщика; нет истории вообще -> РЦ.
-    Порядок: поставщик из справочника -> последнее поступление на этот магазин -> сеть (любой РЦ-приход = РЦ) -> РЦ."""
+    Порядок: поставщик из справочника -> последнее поступление на этот магазин -> последнее поступление по сети -> РЦ.
+    До 15.10.2026 по сети любой РЦ-приход давал РЦ: разовые перемещения с РЦ весной 2026 уводили на склад товар,
+    который давно возят напрямую (Моршинська). Список раскомплектации проверяется раньше, в run_split."""
     if sup_kind:
         return sup_kind, u"поставщик в справочнике маршрутов"
     if shop_rc or shop_dir:
         if shop_rc and (not shop_dir or shop_rc >= shop_dir):
             return KIND_RC, u"по истории магазина: последнее поступление с РЦ" + (u" (были и прямые, взято последнее)" if shop_dir else u"")
         return KIND_SHOPS, u"по истории магазина: последнее поступление прямое" + (u" (были и с РЦ, взято последнее)" if shop_rc else u"")
-    if net_rc:
-        return KIND_RC, u"по истории сети: были перемещения с РЦ"
-    if net_dir:
-        return KIND_SHOPS, u"по истории сети: только приходы от поставщика"
+    if net_rc or net_dir:                     # решение 15.10.2026: как по магазину - последнее поступление по сети
+        if net_rc and (not net_dir or net_rc >= net_dir):
+            return KIND_RC, u"по истории сети: последнее поступление по сети - с РЦ" + (u" (были и прямые)" if net_dir else u"")
+        return KIND_SHOPS, u"по истории сети: последнее поступление по сети - прямое" + (u" (были и с РЦ, взято последнее)" if net_rc else u"")
     return KIND_RC, u"нет истории нигде: РЦ (разкомплектация, решение пользователя)"
 
 
@@ -4702,7 +4771,7 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     keg_bcs = [b for b, nm_ in zip(lst["bc"], lst["name"]) if is_keg(nm_)]
     keg_size = {bc_key(b): keg_size_from_name(nm_) for b, nm_ in zip(lst["bc"], lst["name"]) if is_keg(nm_)}
     try:
-        ua_stores, rsup = load_ua_stores(dirs), load_route_suppliers(dirs)
+        ua_stores, rsup, rkl = load_ua_stores(dirs), load_route_suppliers(dirs), load_razkompl(dirs)
         if ref is None:
             fr = load_reference(dirs)
             ref = make_ref(fr["matrix"], fr["recode"], fr["coffee"], None, fr["hist"]) if fr else None
@@ -4763,10 +4832,13 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
             mk = k if k in ref.matrix else _resolve(ref, k)
             sup = (ref.matrix[mk][2] if mk in ref.matrix else u"") or ref.last_sup.get(k) or ref.last_sup.get(_resolve(ref, k), u"")
         sup = sup or h.get("sup", u"")
+        rk_ = razkompl_match(rkl, r.bc, r.name, [sup, h.get("sup", u""), ref.last_sup.get(k, u"") if ref is not None else u""])
         kind, why = decide_route(h.get("shop_rc", u""), h.get("shop_dir", u""), h.get("net_rc", u""), h.get("net_dir", u""),
                                  rsup.get(sup_norm(sup)) if sup else None)
         if why.startswith(u"поставщик"):
             why += u": " + sup
+        if rk_:                                             # раскомплектация: на точки при любом количестве (решение 15.10.2026)
+            kind, why = KIND_SHOPS, u"раскомплектация (список «на точки», Справочник\\%s): %s" % (RAZKOMPL_FILE, rk_)
         if is_keg(r.name):                                  # кеги не на РЦ: целиком на выбранные точки, где этот ШК продаётся
             sold = any(v_ > 0 for (kk_, _s), v_ in sales_raw.items() if kk_ == k)
             kind = KIND_SHOPS
