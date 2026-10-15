@@ -9,6 +9,9 @@ FONT = "Inter"
 FONT_FALLBACK = "Segoe UI"         # если Inter не загрузился или выбран в «Сервисе»
 FONT_MODES = (("inter", u"Inter"), ("segoe", u"Segoe UI"))
 FONT_ICONS = "Material Symbols Outlined"
+# размер шрифта в «Сервисе» (решение 15.10.2026: 14 px при масштабе Windows 125-150 % слишком крупно): код, подпись, основной px
+FONT_SIZES = (("s", u"Мелкий", 12), ("m", u"Средний", 13), ("l", u"Крупный", 14))
+FONT_SIZE_DEFAULT = "m"
 
 SPACING_XS, SPACING_SM, SPACING_MD, SPACING_LG, SPACING_XL = 4, 8, 16, 24, 32
 RADIUS_SM, RADIUS_DEFAULT, RADIUS_LG, RADIUS_FULL = 2, 4, 8, 9999
