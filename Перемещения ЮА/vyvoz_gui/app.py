@@ -144,6 +144,16 @@ class ServicePage(Page):
         c.lay.addLayout(row)
         self.body.addWidget(c)
 
+        c = Card(u"Распределение: куда везти")
+        row = QHBoxLayout()
+        row.addWidget(button(u"Раскомплектация: на точки…", "call_split", on_click=self._razkompl))
+        row.addWidget(help_button(u"Товар этих поставщиков (Монжар, Агропром, Мак Кофе, Джамп…) «Распределение» везёт по точкам, "
+                                  u"а не на склад, при любом количестве: раскомплектованную упаковку склад не собирает. "
+                                  u"Список можно дополнить.", u"Раскомплектация"))
+        row.addStretch(1)
+        c.lay.addLayout(row)
+        self.body.addWidget(c)
+
         c = Card(u"Таблица соответствия ШК Family - ЮА")
         row = QHBoxLayout()
         b1 = button(u"Составить список кандидатов (Excel)", "table_view",
@@ -168,6 +178,13 @@ class ServicePage(Page):
         self.body.addWidget(c)
         self.finish()
         self.d = d
+
+    def _razkompl(self):
+        from .razkompl import RazkomplDialog
+        dlg = RazkomplDialog(self.core, self.d, self)
+        if dlg.exec() and dlg.saved is not None:
+            self.win.status(u"Список раскомплектации сохранён: %d зап." % dlg.saved, "OK")
+            self.win.journal(u"Раскомплектация", u"Сохранено записей: %d (Справочник\\%s)" % (dlg.saved, self.core.RAZKOMPL_FILE))
 
     def _set_font(self, mode):
         self.win.themes.set_font(mode)
