@@ -2893,6 +2893,7 @@ def _self_test_body(gui=False):
     _selftest_gui_logic(ck)
     _selftest_map(ck)
     _selftest_ua_base(ck)
+    _selftest_inv_check(ck)
 
     reset_report()
     if fails:
@@ -3026,6 +3027,67 @@ def _selftest_ua_base(ck):
         ck(bc_key(B) not in set(ua0["key"]) and src1.get(bc_key(B)) == u"база ЮА (карточка)" and i1.get("base_rows") == 2,
            "база ЮА: карточка с нулём, которой нет на складе, - заведена на ЮА: %s" % src1)
         ck(src1.get(bc_key(A), u"").startswith(u"склад ЮА"), "база ЮА: у товара со склада источник остаётся «склад ЮА»: %s" % src1.get(bc_key(A)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_inv_check(ck):
+    """Сверка txt инвентаризации с базой ЮА: пять итогов, склейка ШК, последний txt, доинвентаризация по остатку Family."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_chk_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        A, B, C, D, E, FU, FF, G, X, H = (_ean("48200700000%d" % i) for i in range(10))
+        sd = os.path.join(d.out, "2026-10-15", u"Тест 1")
+        os.makedirs(sd)
+        old = os.path.join(d.out, "2026-10-12", u"Тест 1", u"Тест 1" + INV_TXT_SUFFIX)
+        os.makedirs(os.path.dirname(old))
+        with open(old, "wb") as f:
+            f.write(("%s;1\r\n" % H).encode("cp1251"))
+        os.utime(old, (time.time() - 86400, time.time() - 86400))
+        with open(os.path.join(sd, u"Тест 1" + INV_TXT_SUFFIX), "wb") as f:
+            f.write(u"".join(u"%s;%s\r\n" % x for x in ((A, 3), (B, 2), (C, "1,5"), (D, 2), (E, 4), (FU, 1))).encode("cp1251"))
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"], ws["A2"] = u"Состояние склада по всем центрам учета", u"Состояние склада"
+        ws.append([u"№", u"Название товара", u"Штрих-код", u"Цена розничная", u"Количество", u"Ед. изм.", u"Себестоимость", u"Склад"])
+        for i, (b, n, q, s) in enumerate(((A, u"Тов А", 3, u"Тест 1 ЮА"), (B, u"Тов Б", 1, u"Тест 1 ЮА"), (X, u"Тов Икс", 7, u"Тест 1 ЮА"),
+                                          (C, u"Тов В", 0, u"Склад ЮА"), (FU, u"Тов Ф ЮА", 2, u"Склад ЮА"), (A, u"Тов А", 5, u"Склад ЮА")), 1):
+            ws.append([i, n, b, 1.0, q, u"шт", 10.0, s])
+        wb.save(os.path.join(d.ua_base, u"База ЮА 16.10.2026.xlsx"))
+        _write_state_xlsx(os.path.join(d.stores, u"Состояние склада Тест 1 16.10.2026.xlsx"), u"Тест 1",
+                          [(A, u"Тов А", 1, u"шт", 10.0), (C, u"Тов В", 1.5, u"кг", 20.0), (D, u"Тов Г", 2, u"шт", 5.0),
+                           (FF, u"Тов Ф", 3, u"шт", 8.0), (G, u"Тов Ж", 4, u"шт", 2.0)])
+        rec = pd.DataFrame({"old_barcode": [FU], "new_barcode": [FF]})
+        reset_report()
+        ck([os.path.basename(os.path.dirname(p)) for p in find_inv_txts(d, u"Тест 1")] == [u"Тест 1", u"Тест 1"]
+           and find_inv_txts(d, u"Тест 1")[-1].startswith(sd), "сверка: txt магазина найдены, свежий последним")
+        info = run_inv_check(d, u"Тест 1", recode_df=rec)
+        ck(info["ok"], "сверка: %s" % info["problems"])
+        st = {r["bc"]: r["st"] for r in info.get("rows", [])}
+        ck(st == {A: CHK_OK, B: CHK_QTY, C: CHK_MISS, D: CHK_NOCARD, E: CHK_FAM0, FU: CHK_MISS},
+           "сверка: итоги по строкам txt (взят только последний txt): %s" % st)
+        fr = {r["bc"]: r for r in info.get("rows", [])}
+        ck(fr.get(FU, {}).get("fam") == 3.0 and fr.get(FU, {}).get("add") == 3.0 and u"Склад ЮА: 2" in fr.get(FU, {}).get("where", u""),
+           "сверка: ШК ЮА склеен с ШК Family - количество по остатку Family, где ещё на ЮА: %s" % fr.get(FU))
+        ck([(r["bc"], r["st"]) for r in info.get("fam_rows", [])] == [(G, u"на ЮА карточки нет")],
+           "сверка: остаток Family вне txt: %s" % info.get("fam_rows"))
+        ck([r[0] for r in info.get("extra_rows", [])] == [bc_key(X)], "сверка: на магазине ЮА сверх txt: %s" % info.get("extra_rows"))
+
+        def _txt(suf):
+            p = os.path.join(info["out_dir"], u"Тест 1" + suf)
+            return open(p, "rb").read().decode("cp1251") if os.path.isfile(p) else None
+        ck(_txt(INV_ADD_SUFFIX) == u"%s;1.5\r\n%s;3\r\n" % (C, FU) or _txt(INV_ADD_SUFFIX) == u"%s;1,5\r\n%s;3\r\n" % (C, FU),
+           "сверка: доинвентаризация - не дошло при карточке на ЮА, количество Family, cp1251 и \r\n: %r" % _txt(INV_ADD_SUFFIX))
+        ck(_txt(INV_NOCARD_SUFFIX) == u"%s;2\r\n" % D, "сверка: без карточки на ЮА - отдельный txt: %r" % _txt(INV_NOCARD_SUFFIX))
+        ck(info.get("xlsx") and load_workbook(info["xlsx"]).sheetnames == [SHEET_CHK_SUM, SHEET_CHK, SHEET_CHK_FAM, SHEET_CHK_EXTRA],
+           "сверка: xlsx и листы: %s" % info.get("xlsx"))
+        i2 = run_inv_check(d, u"Тест 1", txt_paths=[old], recode_df=rec)
+        ck([r["bc"] for r in i2.get("rows", [])] == [H], "сверка: выбранный вручную txt: %s" % i2.get("rows"))
+        ck(not run_inv_check(d, u"Нет такого", recode_df=rec)["ok"], "сверка: неизвестный магазин -> ошибка")
+        pa = _parse_args(["--check-inv", u"Тест 1", "--check-txt", "a.txt;b.txt", "--check-ua", "u.xlsx", "--check-fam", "f.xlsx"])
+        ck(pa["check_inv"] == u"Тест 1" and pa["check_txt"] == ["a.txt", "b.txt"] and pa["check_ua"] == "u.xlsx" and pa["check_fam"] == "f.xlsx",
+           "аргументы сверки: %s" % pa)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -5126,7 +5188,7 @@ def _parse_args(argv):
     a = {"selftest": False, "auto": False, "shops": None, "no_ua": False, "offline": False, "rm": False,
          "excl": [], "incl": [], "split": None, "day": None, "top": None, "with_rc": False, "no_rc": False, "update": None,
          "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False, "to_shop": None,
-         "qt": False, "tk": False}
+         "qt": False, "tk": False, "check_inv": None, "check_txt": [], "check_ua": None, "check_fam": None}
     it = iter(argv)
     for x in it:
         t = x.lower().lstrip("-/")
@@ -5166,6 +5228,14 @@ def _parse_args(argv):
             a["final"] = next(it, "")
         elif t in ("final-file", "final_file"):   # конкретная выгрузка Family для финала (иначе свежая из МАГАЗИНЫ)
             a["final_file"] = next(it, "")
+        elif t in ("check-inv", "check_inv"):     # сверка txt инвентаризации ЮА с выгрузкой магазина в базе ЮА
+            a["check_inv"] = next(it, "")
+        elif t in ("check-txt", "check_txt"):     # какие txt сверять (иначе последний из ВЫВОЗ), через «;»
+            a["check_txt"] += [x for x in next(it, "").split(";") if x.strip()]
+        elif t in ("check-ua", "check_ua"):       # выгрузка ЮА (иначе свежая из БАЗА_ЮА / МАГАЗИНЫ_ЮА)
+            a["check_ua"] = next(it, "")
+        elif t in ("check-fam", "check_fam"):     # выгрузка Family (иначе свежая из МАГАЗИНЫ)
+            a["check_fam"] = next(it, "")
         elif t in ("top", "points", "tochki"):     # на сколько точек делить (1..SPLIT_TOP_N)
             v = next(it, "")
             try:
@@ -6370,6 +6440,344 @@ def _final_text(info):
     L += [u"Примечание: " + x for x in info.get("notes", [])]
     L += [u"ОШИБКА: " + x for x in info.get("problems", [])]
     return u"\n".join(L)
+
+
+# ============ СВЕРКА: txt инвентаризации ЮА <-> что реально стоит на магазине в базе ЮА ============
+# Зачем: txt инвентаризации отдали в ЮА, а дошло ли - видно только по выгрузке базы ЮА. Сверка показывает по каждой строке
+# txt, есть ли товар на магазине в ЮА, и собирает доинвентаризацию из того, что не дошло (количество - нынешний остаток
+# Family: его ещё не списали). Строки без карточки на ЮА идут отдельным файлом: возьмёт ли их ЮА без карточки, не проверено.
+
+INV_CHECK_PREFIX = u"Сверка_инв_ЮА_"
+INV_ADD_SUFFIX = u"_доинвентаризация_ЮА.txt"
+INV_NOCARD_SUFFIX = u"_нет_карточки_ЮА.txt"
+SHEET_CHK = u"Сверка txt"
+SHEET_CHK_FAM = u"Остаток Фемели вне txt"
+SHEET_CHK_EXTRA = u"На ЮА сверх txt"
+SHEET_CHK_SUM = u"Итог"
+CHK_OK = u"дошло"
+CHK_QTY = u"дошло, количество другое"
+CHK_MISS = u"не дошло (карточка на ЮА есть)"
+CHK_NOCARD = u"не дошло (карточки на ЮА нет)"
+CHK_FAM0 = u"не дошло, у Фемели уже 0"
+CHK_ORDER = (CHK_MISS, CHK_NOCARD, CHK_QTY, CHK_OK, CHK_FAM0)
+CHK_ADD = (CHK_MISS, CHK_NOCARD)           # из них собирается доинвентаризация
+CHK_EPS = 0.0005
+
+
+def find_inv_txts(dirs, shop):
+    """txt инвентаризации ЮА магазина в ВЫВОЗ\\<день>\\<магазин>\\ (и в папках финала), старые первыми."""
+    k, out = _skey(shop), []
+    if not os.path.isdir(dirs.out):
+        return out
+    for day_ in os.listdir(dirs.out):
+        dd = os.path.join(dirs.out, day_)
+        if not os.path.isdir(dd):
+            continue
+        for sh in os.listdir(dd):
+            sd = os.path.join(dd, sh)
+            if os.path.isdir(sd) and _skey(sh) == k:
+                for root, _ds, fs in os.walk(sd):
+                    out += [os.path.join(root, f) for f in fs if f.endswith(INV_TXT_SUFFIX)]
+    return sorted(out, key=os.path.getmtime)
+
+
+def _by_key(df):
+    """Строки «Состояния склада» -> {ШК без нулей: {склад: кол-во}}, {ШК: название}, {ШК: себестоимость}."""
+    q, nm, cost = {}, {}, {}
+    for k, s, v, n, c in zip(df["key"], df["shop"], df["qty"], df["name"], df["cost"]):
+        if not k:
+            continue
+        q.setdefault(k, {})
+        q[k][str(s)] = q[k].get(str(s), 0.0) + float(v)
+        nm.setdefault(k, n)
+        if pd.notna(c):
+            cost.setdefault(k, float(c))
+    return q, nm, cost
+
+
+def _bc_groups(pairs):
+    """Пары ШК (в любую сторону) -> {ШК: множество всех ШК того же товара}."""
+    adj = {}
+    for a, b in pairs:
+        if a and b and a != b:
+            adj.setdefault(a, set()).add(b)
+            adj.setdefault(b, set()).add(a)
+    grp = {}
+    for k in adj:
+        if k in grp:
+            continue
+        seen, todo = {k}, [k]
+        while todo:
+            for y in adj.get(todo.pop(), ()):
+                if y not in seen:
+                    seen.add(y)
+                    todo.append(y)
+        for y in seen:
+            grp[y] = seen
+    return grp
+
+
+def run_inv_check(dirs, shop, txt_paths=None, ua_path=None, fam_path=None, recode_df=None, day=None):
+    """Сверка txt инвентаризации ЮА с выгрузкой магазина в базе ЮА.
+    txt_paths - файлы инвентаризации (по умолчанию последний из ВЫВОЗ; несколько - более поздний важнее);
+    ua_path - выгрузка ЮА (по умолчанию свежая из БАЗА_ЮА или МАГАЗИНЫ_ЮА, где есть магазин);
+    fam_path - выгрузка Family (по умолчанию свежая из МАГАЗИНЫ; нет - количество доинвентаризации берётся из txt).
+    -> dict(ok, out_dir, files, xlsx, problems, notes, summary, stats)"""
+    reset_report()
+    dirs.ensure()
+    info = {"ok": False, "problems": [], "notes": [], "files": [], "out_dir": u"", "summary": [], "stats": {}}
+    P, N = info["problems"], info["notes"]
+    k_shop = _skey(shop)
+    # ---- txt инвентаризации ----
+    txts = list(txt_paths or [])
+    if not txts:
+        found = find_inv_txts(dirs, shop)
+        if not found:
+            P.append(u"txt инвентаризации магазина «%s» не найден в %s" % (shop, dirs.out))
+            return info
+        txts = found[-1:]
+        if len(found) > 1:
+            N.append(u"txt инвентаризации всего %d, взят последний; другой - выберите файл" % len(found))
+    tx = {}
+    for p in txts:
+        if not os.path.isfile(p):
+            P.append(u"нет файла %s" % p)
+            return info
+        for b, q in _read_txt_dict(p, P, os.path.basename(p)).items():
+            tx[bc_key(b)] = (b, q)                 # более поздний файл важнее
+        N.append(u"txt: %s" % p)
+    if not tx:
+        P.append(u"в txt инвентаризации нет строк")
+        return info
+    # ---- база ЮА: магазин и остальные точки ----
+    try:
+        base_df, cand = None, []
+        if ua_path:
+            d0, _m = read_state_file(ua_path)
+            if d0["shop"].nunique() > 1:
+                base_df = d0
+            cand.append((ua_path, d0))
+        else:
+            bf = list_xlsx(dirs.ua_base)
+            if bf:
+                bp = _pick_latest(bf)
+                base_df = read_state_file(bp)[0]
+                cand.append((bp, base_df))
+            for p in list_xlsx(dirs.ua_stores):
+                cand.append((p, read_state_file(p)[0]))
+        cand = [(p, d0[d0["shop"].map(lambda s: _ua_shop_key(s) == k_shop)]) for p, d0 in cand]
+        cand = [(p, d0) for p, d0 in cand if len(d0)]
+    except Exception as e:
+        P.append(u"Выгрузка ЮА не прочитана: %s" % e)
+        return info
+    if not cand:
+        P.append(u"В выгрузках ЮА (%s, %s) нет магазина «%s»" % (dirs.ua_base, dirs.ua_stores, ua_name(shop) + u" ЮА"))
+        return info
+    sp = _pick_latest([p for p, _d in cand])
+    shop_df = dict(cand)[sp]
+    ua_shop_name = sorted(set(shop_df["shop"]))[0]
+    age = check_fresh(u"ЮА (сверка)", sp)
+    N.append(u"ЮА: магазин «%s» из %s (снята %.0f ч назад)" % (ua_shop_name, os.path.basename(sp), age))
+    if base_df is None:
+        base_df = shop_df
+        N.append(u"Полной базы ЮА нет: «где ещё на ЮА» и «карточка есть» видно только по магазину")
+    shop_q = {k: sum(v.values()) for k, v in _by_key(shop_df)[0].items()}
+    base_q, base_nm, base_cost = _by_key(base_df[base_df["shop"].map(lambda s: _ua_shop_key(s) != k_shop)])
+    _q2, nm2, cost2 = _by_key(shop_df)
+    for k, n in nm2.items():
+        base_nm.setdefault(k, n)
+    for k, c in cost2.items():
+        base_cost.setdefault(k, c)
+    ua_keys = set(base_q) | set(shop_q)
+    # ---- Family сейчас ----
+    fam = None
+    try:
+        if fam_path:
+            fd = read_state_file(fam_path)[0]
+            fam = fd[fd["shop"].map(lambda s: _skey(s) == k_shop)]
+            fam = fam if len(fam) else fd                 # в выгрузке одного магазина имя в шапке может отличаться
+            N.append(u"Family: %s" % os.path.basename(fam_path))
+        else:
+            st_ = {_skey(s): v for s, v in scan_stores(dirs).items()}
+            if k_shop in st_:
+                fam = st_[k_shop][1]
+                N.append(u"Family: %s (снята %.0f ч назад)" % (os.path.basename(st_[k_shop][0]), check_fresh(u"Family (сверка)", st_[k_shop][0])))
+    except Exception as e:
+        P.append(u"Выгрузка Family не прочитана: %s" % e)
+        return info
+    if fam is None:
+        N.append(u"Выгрузки Family по магазину нет: количество доинвентаризации взято из txt")
+    fam_q, fam_nm, fam_cost, fam_unit = {}, {}, {}, {}
+    if fam is not None:
+        for k, n, q, u, c in zip(fam["key"], fam["name"], fam["qty"], fam["unit"], fam["cost"]):
+            if k:
+                fam_q[k] = fam_q.get(k, 0.0) + float(q)
+                fam_nm.setdefault(k, n)
+                fam_unit.setdefault(k, u)
+                if pd.notna(c):
+                    fam_cost.setdefault(k, float(c))
+    # ---- один товар под разными ШК: склейка barcode_recode_map, пары штучных, таблица соответствия, то же название ----
+    if recode_df is None:
+        recode_df = bq_cached(dirs, "recode", u"SELECT old_barcode, new_barcode FROM `%s`" % RECODE_TABLE,
+                              u"Перекодировка ШК", RECODE_TABLE, required=False)
+    pairs = []
+    if recode_df is not None:
+        pairs += [(bc_key(o), bc_key(n)) for o, n in zip(recode_df["old_barcode"], recode_df["new_barcode"])]
+    pairs += list(load_shk_pairs(dirs).items()) + list(load_ua_map(dirs)[0].items())
+    ua_by_name = {}
+    for k, n in base_nm.items():
+        ua_by_name.setdefault(nname(n), set()).add(k)
+    for k, n in fam_nm.items():
+        hit = ua_by_name.get(nname(n), set())
+        if k not in ua_keys and len(hit) == 1:
+            pairs.append((k, next(iter(hit))))
+    grp = _bc_groups(pairs)
+
+    def same(k):
+        return grp.get(k, {k})
+
+    fam_of = {}
+    for fk in fam_q:
+        for y in same(fk):
+            fam_of.setdefault(y, set()).add(fk)
+
+    rows, used_fam, txt_grp = [], set(), set()
+    for kt, (b, tq) in tx.items():
+        g = same(kt)
+        txt_grp |= g
+        sq = shop_q[kt] if kt in shop_q else (sum(shop_q[y] for y in g if y in shop_q) if any(y in shop_q for y in g) else None)
+        card = any(y in ua_keys for y in g)
+        fks = set().union(*[fam_of.get(y, set()) for y in g])
+        used_fam |= fks
+        fq = round(sum(fam_q[x] for x in fks), 3) if fam is not None else None
+        if sq is not None and abs(sq - tq) <= CHK_EPS:
+            st = CHK_OK
+        elif sq is not None and sq > CHK_EPS:
+            st = CHK_QTY
+        elif fq is not None and fq <= CHK_EPS:
+            st = CHK_FAM0
+        elif not card:
+            st = CHK_NOCARD
+        else:
+            st = CHK_MISS
+        add = (fq if fq is not None else tq) if st in CHK_ADD else None
+        fk0 = sorted(fks)[0] if fks else u""
+        cost = fam_cost.get(fk0, base_cost.get(kt))
+        where = {}
+        for y in g:
+            for s, v in base_q.get(y, {}).items():
+                where[s] = where.get(s, 0.0) + v
+        rows.append({"st": st, "bc": b, "fam_bc": u", ".join(sorted(fks)), "name": base_nm.get(kt) or fam_nm.get(fk0) or u"",
+                     "unit": fam_unit.get(fk0, u""), "txt": tq, "ua": (round(sq, 3) if sq is not None else None),
+                     "diff": round((sq or 0.0) - tq, 3), "fam": fq, "add": add, "cost": cost,
+                     "add_sum": (round(add * cost, 2) if add and cost is not None else None),
+                     "txt_sum": (round(tq * cost, 2) if cost is not None else None),
+                     "where": u", ".join(u"%s: %s" % (s, "%g" % round(v, 3)) for s, v in sorted(where.items()))})
+    rows.sort(key=lambda r: (CHK_ORDER.index(r["st"]), nname(r["name"])))
+    fam_out = []
+    for fk in sorted(set(fam_q) - used_fam, key=lambda x: nname(fam_nm.get(x))):
+        if fam_q[fk] <= CHK_EPS:
+            continue
+        g = same(fk)
+        sq = sum(shop_q[y] for y in g if y in shop_q) if any(y in shop_q for y in g) else None
+        where = {}
+        for y in g:
+            for s, v in base_q.get(y, {}).items():
+                where[s] = where.get(s, 0.0) + v
+        st = (u"на магазине ЮА есть" if sq is not None and sq > CHK_EPS else
+              u"карточка на ЮА есть, на магазине нет" if any(y in ua_keys for y in g) else u"на ЮА карточки нет")
+        c = fam_cost.get(fk)
+        fam_out.append({"st": st, "bc": fk, "ua_bc": u", ".join(sorted(y for y in g if y in ua_keys)), "name": fam_nm.get(fk, u""),
+                        "unit": fam_unit.get(fk, u""), "fam": round(fam_q[fk], 3), "ua": (round(sq, 3) if sq is not None else None),
+                        "sum": (round(fam_q[fk] * c, 2) if c is not None else None),
+                        "where": u", ".join(u"%s: %s" % (s, "%g" % round(v, 3)) for s, v in sorted(where.items()))})
+    extra = [(k, base_nm.get(k, u""), round(q, 3)) for k, q in shop_q.items() if q > CHK_EPS and k not in txt_grp]
+    extra.sort(key=lambda r: nname(r[1]))
+
+    # ---- файлы ----
+    nm = rz.safe_name(shop)
+    day = day or date.today()
+    out_dir = os.path.join(dirs.out, day.strftime("%Y-%m-%d"), nm, INV_CHECK_PREFIX + datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+    os.makedirs(out_dir, exist_ok=True)
+    info["out_dir"] = out_dir
+    for suf, sts in ((INV_ADD_SUFFIX, (CHK_MISS,)), (INV_NOCARD_SUFFIX, (CHK_NOCARD,))):
+        lines = [r for r in rows if r["st"] in sts and r["add"] and r["add"] > CHK_EPS]
+        if not lines:
+            continue
+        fp = os.path.join(out_dir, nm + suf)
+        ir = pd.DataFrame({"bc": [r["bc"] for r in lines], "qty": [r["add"] for r in lines], "step": 1.0,
+                           "is_weight": [str(r["unit"]).lower() in (u"кг", u"kg") for r in lines]})
+        rz.write_shop_txt(fp, ir)
+        info["files"].append(fp)
+        exp = {r["bc"]: round(float(r["add"]), 3) for r in lines}
+        if _read_txt_dict(fp, P, os.path.basename(fp)) != exp:
+            P.append(u"%s: при обратном чтении не совпало с расчётом" % os.path.basename(fp))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_CHK
+    ws.append([u"Итог", u"ШК в txt (ЮА)", u"ШК Фемели", u"Название", u"Ед.", u"В txt", u"На магазине ЮА",
+               u"Разница (ЮА - txt)", u"У Фемели сейчас", u"В доинвентаризацию", u"Себестоимость", u"Сумма доинв.",
+               u"Где ещё на ЮА (остаток)"])
+    for r in rows:
+        ws.append([r["st"], r["bc"], r["fam_bc"], r["name"], r["unit"], r["txt"], r["ua"], r["diff"], r["fam"], r["add"],
+                   r["cost"], r["add_sum"], r["where"]])
+    ws2 = wb.create_sheet(SHEET_CHK_FAM)
+    ws2.append([u"Итог", u"ШК Фемели", u"ШК на ЮА", u"Название", u"Ед.", u"У Фемели сейчас", u"На магазине ЮА", u"Сумма",
+                u"Где ещё на ЮА (остаток)"])
+    for r in fam_out:
+        ws2.append([r["st"], r["bc"], r["ua_bc"], r["name"], r["unit"], r["fam"], r["ua"], r["sum"], r["where"]])
+    ws3 = wb.create_sheet(SHEET_CHK_EXTRA)
+    ws3.append([u"ШК ЮА", u"Название", u"На магазине ЮА"])
+    for r in extra:
+        ws3.append(list(r))
+    ws4 = wb.create_sheet(SHEET_CHK_SUM)
+    ws4.append([u"Итог", u"Строк", u"Единиц в txt", u"Сумма txt", u"В доинвентаризацию, ед.", u"Сумма доинв."])
+    summ = []
+    for s in CHK_ORDER:
+        g_ = [r for r in rows if r["st"] == s]
+        if g_:
+            vals = (len(g_), round(sum(r["txt"] for r in g_), 3), round(sum(r["txt_sum"] or 0 for r in g_), 2),
+                    round(sum(r["add"] or 0 for r in g_), 3), round(sum(r["add_sum"] or 0 for r in g_), 2))
+            ws4.append([s] + list(vals))
+            summ.append((u"txt: " + s, vals[0], vals[1], vals[2]))
+    ws4.append([u"Всего строк txt", len(rows), round(sum(r["txt"] for r in rows), 3), round(sum(r["txt_sum"] or 0 for r in rows), 2)])
+    for s in (u"на магазине ЮА есть", u"карточка на ЮА есть, на магазине нет", u"на ЮА карточки нет"):
+        g_ = [r for r in fam_out if r["st"] == s]
+        if g_:
+            ws4.append([u"Фемели вне txt: " + s, len(g_), round(sum(r["fam"] for r in g_), 3), round(sum(r["sum"] or 0 for r in g_), 2)])
+            summ.append((u"Фемели вне txt: " + s, len(g_), round(sum(r["fam"] for r in g_), 3), round(sum(r["sum"] or 0 for r in g_), 2)))
+    ws4.append([u"На ЮА сверх txt", len(extra), round(sum(r[2] for r in extra), 3), u""])
+    ws4.append([])
+    for n_ in N + [u"ОШИБКА: " + x for x in P]:
+        ws4.append([n_])
+    for w_, tc in ((ws, (2, 3)), (ws2, (2, 3)), (ws3, (1,))):
+        for row_ in w_.iter_rows(min_row=2):
+            for j in tc:
+                row_[j - 1].number_format = "@"
+        for c0 in w_[1]:
+            c0.font = Font(bold=True)
+            c0.alignment = HEAD_ALIGN
+        _fit_widths(w_)
+        w_.freeze_panes = "B2"
+    _fit_widths(ws4)
+    wb.move_sheet(SHEET_CHK_SUM, offset=-3)
+    wb.active = 0
+    xp = os.path.join(out_dir, nm + u"_сверка_инв_ЮА.xlsx")
+    try:
+        wb.save(xp)
+        info["files"].append(xp)
+        info["xlsx"] = xp
+    except PermissionError:
+        P.append(u"%s занят (закройте в Excel)" % os.path.basename(xp))
+    cnt = {s: sum(1 for r in rows if r["st"] == s) for s in CHK_ORDER}
+    info["stats"] = dict(cnt, txt_lines=len(rows), fam_out=len(fam_out), extra=len(extra),
+                         add_lines=sum(1 for r in rows if r["st"] == CHK_MISS and r["add"]),
+                         nocard_lines=sum(1 for r in rows if r["st"] == CHK_NOCARD and r["add"]))
+    info["summary"] = summ
+    info["rows"], info["fam_rows"], info["extra_rows"] = rows, fam_out, extra
+    info["ok"] = not P
+    return info
 
 
 # ============ ОКНО: входные папки, выбор магазина, лист для распределения ============
@@ -7642,6 +8050,10 @@ def main(argv=None):
         return 0 if info.get("ok") else 2
     if args["final"]:
         info = run_final_inventory(DIRS, args["final"], state_path=args["final_file"])
+        print(_final_text(info))
+        return 0 if info.get("ok") else 2
+    if args["check_inv"]:
+        info = run_inv_check(DIRS, args["check_inv"], txt_paths=args["check_txt"], ua_path=args["check_ua"], fam_path=args["check_fam"])
         print(_final_text(info))
         return 0 if info.get("ok") else 2
     if args["split"]:
