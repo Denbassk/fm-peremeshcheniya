@@ -1,5 +1,6 @@
 """Экран «Довывоз»: остаток магазинов после перехода на ЮА вывозится полностью. Что остаётся в магазине - галочки по
 категориям; один магазин или несколько сразу; куда - сильнейшие точки, своя сумма на точку или точки вручную.
+Заморозка Бащинского - одной партией на одну точку с его холодильником (выбор в шаге 3), стаканы и кофе - на точку с кофеаппаратом.
 Расчёт - core.run_dovyvoz (зачистка с выбором категорий + распределение с приоритетом точек)."""
 import os
 
@@ -19,7 +20,13 @@ KEEP_HELP = (u"Отмеченное остаётся в магазине, всё
              u"всегда (в ТСД не загрузить). Категории заморозки и скоропорта берутся из Справочник\\vyvoz_perishable.csv "
              u"(по комментарию строки) и по названию. Выбор запоминается.")
 WHERE_HELP = (u"Прямые поставки, раскомплектация и кеги - на точки. Товар РЦ - тоже на точки, если его продают хоть на одной; "
-              u"на %s - только товар РЦ, который нигде не продаётся и есть в матрице. Остатки получателей не учитываются.")
+              u"на %s - только товар РЦ, который нигде не продаётся и есть в матрице. Стаканы, крышки, кофе и сырьё "
+              u"кофеаппарата - одной партией на точку с кофеаппаратом (если она среди отмеченных вручную - на неё). Пакеты - по "
+              u"продажам. Заморозка Бащинского - на точку, выбранную ниже. Всё это на склад не едет. Остатки получателей не учитываются.")
+BASH_HELP = (u"Холодильники Бащинского есть не во всех магазинах. Точки с холодильником - где за 60 дней продано не меньше 5 позиций его заморозки (ВХОД_ВЫВОЗ\\ДОВЫВОЗ\\заморозка_бащинский.txt) не меньше чем в 6 неделях "
+             u"(BigQuery), или список из файла ВХОД_ВЫВОЗ\\ДОВЫВОЗ\\холодильники_бащинский.txt (по магазину в строке). "
+             u"Вся заморозка Бащинского из всех магазинов довывоза едет одной партией на выбранную точку, без порога суммы. "
+             u"Выбор запоминается: при поочерёдном расчёте магазинов точка та же. Хладик - как обычный товар, его холодильники везде.")
 WHERE = (("top", u"Сильнейшие точки"), ("sum", u"По сумме на точку"), ("manual", u"Выбрать точки вручную"))
 
 
@@ -45,6 +52,7 @@ class DovyvozPage(Page):
         super().__init__("dv", core, win)
         self.d = win.dirs
         self.found, self.sig, self.info = [], None, None
+        self.pinfo, self._bash_warn = None, u""
 
         # ---------- шаг 1: магазины ----------
         c = Card(u"Шаг 1 · Какие магазины", SHOPS_HELP % core.DOVYVOZ_IN_DIR)
@@ -85,6 +93,10 @@ class DovyvozPage(Page):
             cb.setChecked((k in saved) if saved is not None else dflt)
             if k == "keg":
                 cb.setToolTip(u"Не отмечено - кеги едут целыми на точки, где их продают. На склад кеги не едут никогда.")
+            elif k in ("cup", "coffee"):
+                cb.setToolTip(u"Не отмечено - одной партией на точку с кофеаппаратом. На склад не едут никогда.")
+            elif k == "bag":
+                cb.setToolTip(u"Не отмечено - по точкам по продажам. На склад не едут никогда.")
             cb.toggled.connect(lambda *_: (self._save_keep(), self.update_action()))
             self.keep[k] = cb
             g.addWidget(cb, i // 2, i % 2)
@@ -139,6 +151,25 @@ class DovyvozPage(Page):
         self.pts.setAccessibleName(u"Точки-получатели")
         self.pts.itemChanged.connect(lambda *_: self.update_action())
         c.lay.addWidget(self.pts)
+        brow = QHBoxLayout()
+        brow.setSpacing(T.SPACING_SM)
+        brow.addWidget(QLabel(u"Заморозка Бащинского →"))
+        self.bash_cb = QComboBox()
+        self.bash_cb.setAccessibleName(u"Куда везти заморозку Бащинского")
+        self.bash_cb.setMinimumWidth(18 * T.SPACING_MD)
+        self.bash_cb.currentIndexChanged.connect(lambda *_: (self._save_bash(), self.update_action()))
+        brow.addWidget(self.bash_cb)
+        self.bash_btn = button(u"Найти по продажам", "refresh",
+                               tip=u"Точки с холодильником Бащинского и с кофеаппаратом - из BigQuery", on_click=self.load_points)
+        brow.addWidget(self.bash_btn)
+        brow.addWidget(help_button(BASH_HELP, u"Заморозка Бащинского"))
+        brow.addStretch(1)
+        c.lay.addLayout(brow)
+        self.bash_line = StatusLine()
+        c.lay.addWidget(self.bash_line)
+        self.coffee_line = StatusLine()
+        c.lay.addWidget(self.coffee_line)
+        self._fill_bash()
         self.where.buttonClicked.connect(lambda *_: self.on_where())
         self.body.addWidget(c)
 
@@ -162,13 +193,29 @@ class DovyvozPage(Page):
         bl.addWidget(self.summary, 1)
         self.go_btn = button(u"Сформировать довывоз", "local_shipping", kind="primary", on_click=self.go)
         bl.addWidget(self.go_btn)
-        win.busy_widgets += [self.go_btn]
+        win.busy_widgets += [self.go_btn, self.bash_btn]
         self.on_mode()
         self.on_where()
 
     # ---------------- настройки ----------------
     def _settings(self):
         return getattr(getattr(self.win, "themes", None), "settings", None)
+
+    def _sget(self, key):
+        try:
+            s = self._settings()
+            v = s.value(key) if s is not None else None
+            return None if v is None else str(v)
+        except Exception:
+            return None
+
+    def _sset(self, key, val):
+        try:
+            s = self._settings()
+            if s is not None:
+                s.setValue(key, val)
+        except Exception:
+            pass
 
     def _load_keep(self):
         try:
@@ -184,12 +231,12 @@ class DovyvozPage(Page):
         return set() if v == u"-" else set(x for x in v.split(u",") if x)
 
     def _save_keep(self):
-        try:
-            s = self._settings()
-            if s is not None:
-                s.setValue("dovyvoz_keep", u",".join(k for k, cb in self.keep.items() if cb.isChecked()) or u"-")
-        except Exception:
-            pass
+        self._sset("dovyvoz_keep", u",".join(k for k, cb in self.keep.items() if cb.isChecked()) or u"-")
+
+    def _save_bash(self):
+        v = self.bash_cb.currentData()
+        if v:
+            self._sset("dovyvoz_bash_point", v)
 
     def set_keep(self, keys):
         for k, cb in self.keep.items():
@@ -250,6 +297,7 @@ class DovyvozPage(Page):
             self.pts.addItem(it)
         self.pts.blockSignals(False)
         _fit(self.pts, 10)
+        self._mark_points()
 
     def on_mode(self):
         one = self.rb_one.isChecked()
@@ -262,6 +310,76 @@ class DovyvozPage(Page):
             t = self.one_cb.currentText().strip()
             return [t] if t else []
         return _checked(self.many)
+
+    # ---------------- точки Бащинского и кофеаппарата ----------------
+    def load_points(self):
+        if self.win.worker is not None:
+            return
+        core, mine = self.core, [x[0] for x in self.found]
+        self.win.run_task(u"Довывоз: точки Бащинского и кофеаппарата", lambda: core.dovyvoz_points(self.d, mine), self._points_done)
+
+    def _points_done(self, info, out):
+        self.pinfo = info if isinstance(info, dict) else {"bash": [], "coffee": [], "problem": u"нет ответа"}
+        self._fill_bash()
+        self._mark_points()
+        self.update_action()
+
+    def _fill_bash(self):
+        p = self.pinfo
+        fr = (p or {}).get("bash") or []
+        saved = self._sget("dovyvoz_bash_point")
+        self.bash_cb.blockSignals(True)
+        self.bash_cb.clear()
+        if p is None:
+            self.bash_cb.addItem(u"нажмите «Найти по продажам» (или расчёт найдёт сам)", None)
+        elif not fr:
+            self.bash_cb.addItem(u"не найдены - заморозка поделится по спросу", None)
+        else:
+            for i, (s, q) in enumerate(fr):
+                t = s + (u"  · лучшая по продажам" if i == 0 else u"")
+                if q:
+                    t += u"  · %.0f шт за %d дн." % (q, self.core.DV_BASH_DAYS)
+                self.bash_cb.addItem(t, s)
+            names = [s for s, _q in fr]
+            self.bash_cb.setCurrentIndex(names.index(saved) if saved in names else 0)
+        self.bash_cb.blockSignals(False)
+
+    def _mark_points(self):
+        p = self.pinfo or {}
+        sk = self.core._skey
+        fr = set(sk(s) for s, _q in p.get("bash") or [])
+        cf = set(sk(s) for s, _q in p.get("coffee") or [])
+        for i in range(self.pts.count()):
+            it = self.pts.item(i)
+            tags = ([u"есть холодильник Бащинского"] if sk(it.text()) in fr else []) + ([u"кофеаппарат"] if sk(it.text()) in cf else [])
+            it.setToolTip(u", ".join(tags))
+
+    def _point_lines(self, h, pts):
+        core, p = self.core, self.pinfo
+        self._bash_warn = u""
+        if p is None:
+            self.bash_line.set(u"Точки с холодильником Бащинского ещё не искались: «Найти по продажам» - или расчёт возьмёт лучшую сам", "OK")
+            self.coffee_line.setVisible(False)
+            return
+        sk = core._skey
+        fr = [s for s, _q in p.get("bash") or []]
+        bp = self.bash_cb.currentData()
+        if not fr:
+            self.bash_line.set(u"Холодильники Бащинского не определены%s: его заморозка поделится по спросу - проверьте"
+                               % ((u" (" + p["problem"] + u")") if p.get("problem") else u""), "WARN")
+        elif h == "manual" and pts and not any(sk(s) in set(sk(x) for x in fr) for s in pts):
+            self._bash_warn = u"Среди выбранных нет холодильника Бащинского, заморозка поедет на %s" % bp
+            self.bash_line.set(self._bash_warn, "WARN")
+        else:
+            self.bash_line.set(u"Холодильник Бащинского (%d): %s. Вся его заморозка - на %s" % (len(fr), u", ".join(fr), bp), "OK")
+        cl = [s for s, _q in p.get("coffee") or []]
+        self.coffee_line.setVisible(True)
+        if not cl:
+            self.coffee_line.set(u"Точки с кофеаппаратом не определены: стаканы и кофе поделятся по спросу", "WARN")
+        else:
+            sel = set(sk(x) for x in pts) if h == "manual" else set()
+            cp = next((s for s in cl if sk(s) in sel), cl[0])
+            self.coffee_line.set(u"Стаканы, кофе, сырьё кофеаппарата - одной партией на %s (кофеаппарат на %d точках)" % (cp, len(cl)), "OK")
 
     # ---------------- шаг 3 ----------------
     def where_val(self):
@@ -280,6 +398,7 @@ class DovyvozPage(Page):
         if not hasattr(self, "go_btn"):
             return
         shops, h, pts = self.selected_shops(), self.where_val(), _checked(self.pts)
+        self._point_lines(h, pts)
         why = u""
         if not self.found:
             why = u"Положите выгрузки в ВХОД_ВЫВОЗ\\%s" % self.core.DOVYVOZ_IN_DIR
@@ -307,33 +426,49 @@ class DovyvozPage(Page):
         pts = _checked(self.pts) if h == "manual" else None
         top = self.top_sp.value() if h == "top" else None
         msum = float(self.sum_sp.value()) if h == "sum" else None
+        bp = self.bash_cb.currentData()
         keep_t = u", ".join(cb.text() for cb in self.keep.values() if cb.isChecked()) or u"ничего"
+        bash_t = (u"Заморозка Бащинского: вся на %s" % bp) if bp else u"Заморозка Бащинского: на лучшую точку с холодильником (найдёт расчёт)"
+        if self._bash_warn:
+            bash_t += u"\nВНИМАНИЕ: " + self._bash_warn
         if QMessageBox.question(
                 self, TITLE, u"Довывоз: %s\n\nОстаётся в магазине: %s\n\nВсё остальное уедет: на точки; на %s - только товар РЦ, "
-                u"который нигде не продаётся и есть в матрице.\n\nСформировать?" % (u", ".join(shops), keep_t, core.SPLIT_RC_NAME),
+                u"который нигде не продаётся и есть в матрице.\n\n%s\n\nСформировать?"
+                % (u", ".join(shops), keep_t, core.SPLIT_RC_NAME, bash_t),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
             return
         label = u"Довывоз: %s" % (shops[0] if len(shops) == 1 else u"%d магазинов" % len(shops))
 
         def done(info, out):
             self.info = info or {}
+            if isinstance(self.info.get("points"), dict):
+                self.pinfo = self.info["points"]
+                if self.info.get("bash_point"):
+                    self._sset("dovyvoz_bash_point", self.info["bash_point"])
+                self._fill_bash()
+                self._mark_points()
+                self.update_action()
             splits = self.info.get("splits", [])
             rows = [{"addr": u"%s → %s" % (nm, a), "pos": kk, "qty": core.fmt_qty(q), "sum": core.fmt_money(sm, 2)}
                     for nm, sp in splits for a, kk, q, sm in (sp or {}).get("summary", [])]
             self.win.journal(label, core._dovyvoz_text(self.info))
             crow = [{"cat": c_, "st": s_, "pos": n_, "sum": core.fmt_money(sm_, 2)}
                     for c_, s_, n_, sm_ in core.dovyvoz_stat_rows(self.info.get("stats"))]
+            warns = list(dict.fromkeys(w_ for _n, sp in splits for w_ in ((sp or {}).get("dv_warn") or [])))
             if self.info.get("ok"):
                 tot = sum(float(r_[3] or 0) for _n, sp in splits for r_ in (sp or {}).get("summary", []))
                 nf = sum(len((sp or {}).get("files", [])) for _n, sp in splits)
-                self.res.show_result(rows, u"Готово: файлов ТСД %d на %s грн. В ТСД грузить только из папок «ТСД_по_адресам»."
-                                     % (nf, core.fmt_money(tot)), "OK", max_rows=12)
+                msg = u"Готово: файлов ТСД %d на %s грн. В ТСД грузить только из папок «ТСД_по_адресам»." % (nf, core.fmt_money(tot))
+                if warns:
+                    msg += u" ВНИМАНИЕ: " + u"; ".join(warns)
+                self.res.show_result(rows, msg, "WARN" if warns else "OK", max_rows=12)
             else:
                 self.res.show_result(rows, self.info.get("problem") or u"Есть ошибки - подробности в «Журнале».", "ERR")
                 self.win.status(u"Довывоз: есть ошибки", "ERR")
             self.cats.show_result(crow, u"Что осталось в магазинах и что уехало", "INFO", max_rows=12)
             QTimer.singleShot(50, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
-        self.win.run_task(label, lambda: core.run_dovyvoz(self.d, shops=shops, top_n=top, points=pts, min_sum=msum, keep=keep), done)
+        self.win.run_task(label, lambda: core.run_dovyvoz(self.d, shops=shops, top_n=top, points=pts, min_sum=msum,
+                                                          keep=keep, bash_point=bp), done)
 
     def open_in(self):
         d_ = self.core.dovyvoz_in_dir(self.d)

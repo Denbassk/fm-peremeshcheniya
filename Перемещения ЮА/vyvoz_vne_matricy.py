@@ -4838,7 +4838,7 @@ def dovyvoz_route(kind, why, key, sold_keys, ref):
 
 
 def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=False, auto_points=False, per_shop=(5000.0, 7000.0),
-              target=None, dovyvoz=False, points=None, min_sum=None, kegs=True, exclude=None):
+              target=None, dovyvoz=False, points=None, min_sum=None, kegs=True, exclude=None, dv=None):
     """Исправленный лист вывоза -> txt для ТСД по адресам + xlsx для проверки. -> dict(ok, out_dir, files, problems, summary)
     Точки - по спросу на товары ЭТОГО списка (решение владельца 09.10.2026), не меньше per_shop[0] грн на точку в обоих режимах.
     target - «весь вывоз на один магазин»: всё, что обычно делится по точкам (прямые поставки, кеги), едет на этот магазин;
@@ -4961,6 +4961,14 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         _sold = set(kk_ for (kk_, s_), v_ in sales.items() if v_ > 0 and _skey(s_) not in _ex0)
         _dv = [dovyvoz_route(k_, w_, bc_key(b_), _sold, ref) for b_, k_, w_ in zip(lst["bc"], lst["kind"], lst["why"])]
         lst["kind"], lst["why"] = [x_[0] for x_ in _dv], [x_[1] for x_ in _dv]
+    force = {}
+    if dovyvoz:                                         # Бащинский и кофеаппарат - одной партией на одну точку; пакеты - не на склад
+        force, _norc, _dvn, _dvw = dovyvoz_force(lst, ref, load_dovyvoz_rules(dirs), dv or {})
+        if _norc:
+            lst["kind"] = [KIND_SHOPS if b_ in _norc else k_ for b_, k_ in zip(lst["bc"], lst["kind"])]
+            lst["why"] = [_norc.get(b_, w_) for b_, w_ in zip(lst["bc"], lst["why"])]
+        info["notes"] = list(info.get("notes") or []) + _dvn
+        info["dv_warn"] = list(_dvw)
     rank, dem = rank_by_demand(lst, list(alive["store"]), rev, sales)
     grp = group_sales(lst, sales)
     info["demand"] = dem
@@ -5033,6 +5041,10 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     def _alloc(pts):
         out_ = []      # (адрес, ШК, количество)
         for r in lst.itertuples(index=False):
+            if r.bc in force:                           # довывоз: Бащинский / кофеаппарат - целиком на одну точку
+                out_.append((force[r.bc][0], r.bc, float(r.qty)))
+                hows[r.bc] = force[r.bc][1]
+                continue
             if tgt and r.kind == KIND_SHOPS:            # всё на один магазин: количество целиком; товар РЦ - ниже, как обычно
                 out_.append((tgt, r.bc, float(r.qty)))
                 continue
@@ -5070,6 +5082,10 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         info["notes"] = list(info.get("notes") or []) + [
             u"Меньше %.0f грн на точку не везём: убраны %s; их товар разделён между остальными. Точек было %d, едет %d"
             % (per_shop[0], u", ".join(dropped), n_want, len(shops))]
+    if dovyvoz and force:
+        _pw = dovyvoz_point_warns(force, shops, dv or {})
+        info["dv_warn"] = list(info.get("dv_warn") or []) + _pw
+        info["notes"] = list(info.get("notes") or []) + [u"ВНИМАНИЕ: " + w_ for w_ in _pw]
     fin = {}
     for a_, b_, q_ in alloc:
         if a_ != SPLIT_RC_NAME:
@@ -8286,7 +8302,206 @@ def dovyvoz_shops(dirs):
     return out
 
 
-def run_dovyvoz(dirs, shops=None, top_n=None, points=None, min_sum=None, keep=None, kegs=None):
+# ---------- довывоз: Бащинский - одной партией на точку с его холодильником; стаканы и кофе - на точку с кофеаппаратом;
+# пакеты - по точкам; всё это на склад не едет (решение 20.10.2026). Хладик - как обычный товар (холодильники везде).
+DV_BASH_RE = re.compile(u"ба[щш][иіы]нськ|ба[щш][иі]нск")
+DV_BASH_DAYS = 60
+DV_BASH_MIN_CHECKS = 3
+DV_COFFEE_DAYS = 120
+DV_BASH_FILE = u"холодильники_бащинский.txt"
+DV_BASH_FROZEN_FILE = u"заморозка_бащинский.txt"
+DV_BASH_MIN_SKUS = 5        # холодильник Бащинского: за DV_BASH_DAYS дн. продано не меньше 5 разных позиций его заморозки
+DV_BASH_MIN_WEEKS = 6       # ... и продажи не меньше чем в 6 неделях (данные 20.10.2026: так выходят ровно 9 точек)
+DV_BASH_FROZEN_DEFAULT = (
+    ("2984670058869", u"Стегна Айдахо у том.маринаді 1кг"),
+    ("4820085609945", u"Нагетси 300г"),
+    ("4823116820654", u"Печінка Курчати-Бройлера 700г"),
+    ("4820227764013", u"Піца Американа Легко 420г"),
+    ("4820227762965", u"Піца Сирна Легко 370г"),
+    ("4820085609969", u"Нагетси с Сиром 300г"),
+    ("4823116842663", u"Фарш Курячий н/ф нат.650г"),
+    ("4820085609907", u"Котлета Кордон Блю 315г"),
+    ("4820085609921", u"Котлета По-Київськи 290г"),
+    ("4823116820630", u"Серце курчати-Бройлера 700г"),
+    ("4820107350183", u"Гомілка Кур- БР зам 1кг (фас 2,5)"),
+    ("2202606060138", u"Крильця Солодкий Чилі 1кг"),
+    ("4820227761401", u"Нагетси Курячі Мініки 300г"),
+    ("4820227763269", u"Крильця Курячі Кріспі Легко 400г"),
+)
+
+
+def load_bash_frozen(dirs):
+    """ШК заморозки Бащинского (одной партией на точку с его холодильником) -> set ключей ШК.
+    Файл ВХОД_ВЫВОЗ\\ДОВЫВОЗ\\заморозка_бащинский.txt, строка «ШК;название»; нет файла - создаётся из списка по умолчанию."""
+    fp = os.path.join(dovyvoz_in_dir(dirs), DV_BASH_FROZEN_FILE)
+    try:
+        if not os.path.isfile(fp):
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with io.open(fp, "w", encoding="utf-8-sig") as f_:
+                f_.write(u"# Заморозка Бащинского: ШК;название. Эти ШК при довывозе едут одной партией на точку с его холодильником\n")
+                for b_, n_ in DV_BASH_FROZEN_DEFAULT:
+                    f_.write(u"%s;%s\n" % (b_, n_))
+        ks = set()
+        with io.open(fp, encoding="utf-8-sig") as f_:
+            for ln in f_:
+                ln = ln.strip()
+                if ln and not ln.startswith(u"#"):
+                    k_ = bc_key(re.split(u"[;,\\t ]", ln, 1)[0])
+                    if k_:
+                        ks.add(k_)
+        if ks:
+            return ks
+    except Exception as e:
+        R.check("WARN", u"Довывоз: заморозка Бащинского", u"%s не прочитан (%s): беру список по умолчанию" % (fp, e))
+    return set(bc_key(b_) for b_, _n in DV_BASH_FROZEN_DEFAULT)
+
+
+def dv_bash_pick(rows, ok_):
+    """rows [(точка, позиций, чеков, шт, недель)] -> [(точка, шт)] с холодильником Бащинского, больше чеков - первой."""
+    return [(s_, float(q_)) for s_, k_, n_, q_, w_ in sorted(rows, key=lambda x_: -x_[2])
+            if ok_(s_) and k_ >= DV_BASH_MIN_SKUS and w_ >= DV_BASH_MIN_WEEKS]
+DV_HOW_BASH = u"Бащинский: одна точка с холодильником"
+DV_HOW_COFFEE = u"кофеаппарат: одна точка"
+
+
+def dv_is_bash(sup, name):
+    """Товар Бащинского: по поставщику (история поставок / матрица) или по названию."""
+    return bool(DV_BASH_RE.search((u"%s %s" % (sup or u"", name or u"")).lower()))
+
+
+def dovyvoz_row_cat(bc, name, ref, rules):
+    """Категория строки листа вывоза (как dovyvoz_cat) + запасное распознавание стаканов / крышек / пакетов по названию."""
+    cat = u""
+    try:
+        r_ = types.SimpleNamespace(bc=str(bc), key=bc_key(bc), name=str(name), verdict=u"")
+        cat = dovyvoz_cat(r_, ref, rules)[0]
+    except Exception:
+        cat = u""
+    if not cat:
+        nn = nname(name).lower()
+        if RE_CUP.search(nn) or u"кришк" in nn or u"крышк" in nn:
+            cat = "cup"
+        elif re.search(u"(^|\\s)пакет", nn):
+            cat = "bag"
+    return cat
+
+
+def dovyvoz_force(lst, ref, rules, dv):
+    """-> (force {ШК: (адрес, как делилось)}, norc {ШК: основание - на склад не едет}, notes, warns)."""
+    force, norc, notes, warns = {}, {}, [], []
+    bp, cp = dv.get("bash_point"), dv.get("coffee_point")
+    bk = set(dv["bash_keys"]) if dv.get("bash_keys") is not None else set(bc_key(x_) for x_, _n in DV_BASH_FROZEN_DEFAULT)
+    nb, nc, ng = [0, 0.0], [0, 0.0], [0, 0.0]
+    sups = list(lst["sup"]) if "sup" in lst.columns else [u""] * len(lst)
+    sums = list(lst["sum"]) if "sum" in lst.columns else [0.0] * len(lst)
+    for b_, nm_, s_, sm_ in zip(lst["bc"], lst["name"], sups, sums):
+        x_ = pd.to_numeric(sm_, errors="coerce")
+        x_ = 0.0 if pd.isna(x_) else float(x_)
+        if is_keg(nm_):
+            continue
+        if bc_key(b_) in bk:                         # только заморозка Бащинского из списка
+            norc[b_] = u"довывоз: заморозка Бащинского - вся на одну точку с его холодильником, на склад не едет"
+            if bp:
+                force[b_] = (bp, DV_HOW_BASH)
+            nb[0] += 1
+            nb[1] += x_
+            continue
+        cat = dovyvoz_row_cat(b_, nm_, ref, rules)
+        if cat in ("cup", "coffee"):
+            norc[b_] = u"довывоз: %s - на точку с кофеаппаратом, на склад не едет" % dovyvoz_cat_label(cat)
+            if cp:
+                force[b_] = (cp, DV_HOW_COFFEE)
+            nc[0] += 1
+            nc[1] += x_
+        elif cat == "bag":
+            norc[b_] = u"довывоз: пакеты - по точкам по продажам, на склад не едут"
+            ng[0] += 1
+            ng[1] += x_
+    if nb[0]:
+        if bp:
+            notes.append(u"Заморозка Бащинского: %d поз. на %.0f грн - вся на %s (точка с его холодильником), без порога суммы"
+                         % (nb[0], nb[1], bp))
+        else:
+            warns.append(u"Точки с холодильником Бащинского не определены: его заморозка (%d поз.) поделена по спросу - проверьте, "
+                         u"есть ли там холодильник" % nb[0])
+    if nc[0]:
+        if cp:
+            notes.append(u"Стаканы, крышки, кофе и сырьё кофеаппарата: %d поз. на %.0f грн - все на %s (кофеаппарат)" % (nc[0], nc[1], cp))
+        else:
+            warns.append(u"Точки с кофеаппаратом не определены: стаканы и кофе (%d поз.) поделены по спросу" % nc[0])
+    if ng[0]:
+        notes.append(u"Пакеты: %d поз. на %.0f грн - по точкам по продажам, на склад не едут" % (ng[0], ng[1]))
+    return force, norc, notes, warns
+
+
+def dovyvoz_point_warns(force, shops, dv):
+    """Предупреждение: Бащинский есть в списке, а среди точек-получателей нет ни одной с его холодильником."""
+    warns = []
+    if any(h_ == DV_HOW_BASH for _a, h_ in force.values()):
+        fr = set(_skey(s_) for s_ in dv.get("bash_fridges") or [])
+        if fr and not any(_skey(s_) in fr for s_ in shops or []):
+            warns.append(u"Среди выбранных точек нет холодильника Бащинского, заморозка поедет на %s" % dv.get("bash_point"))
+    return warns
+
+
+def dovyvoz_points(dirs, exclude=None, bash_keys=None):
+    """Точки для довывоза -> dict(bash=[(точка, шт)], coffee=[(точка, шт)], problem, src).
+    bash - холодильник Бащинского: за DV_BASH_DAYS дн. продано не меньше DV_BASH_MIN_SKUS позиций его ЗАМОРОЗКИ (bash_keys,
+    файл заморозка_бащинский.txt) и не меньше чем в DV_BASH_MIN_WEEKS неделях; больше чеков - первой.
+    Или список из ВХОД_ВЫВОЗ\\ДОВЫВОЗ\\холодильники_бащинский.txt (порядок = приоритет).
+    coffee - кофеаппарат: приходы сырья кофеаппарата за DV_COFFEE_DAYS дн., больше - первой.
+    Только работающие точки не на ЮА, не склад и не магазины довывоза (exclude)."""
+    out = {"bash": [], "coffee": [], "problem": u"", "src": u"BigQuery"}
+    ex = set(_skey(x_) for x_ in (exclude or []))
+    if bash_keys is None:
+        bash_keys = load_bash_frozen(dirs)
+    names = {}
+    try:
+        alive = pick_top_shops(load_ua_stores(dirs), n=10 ** 6)
+        names = dict((_skey(s_), str(s_)) for s_ in alive["store"])
+    except Exception as e:
+        out["problem"] = u"нет данных BigQuery: %s" % e
+    fp = os.path.join(dovyvoz_in_dir(dirs), DV_BASH_FILE)
+    if os.path.isfile(fp):
+        try:
+            with io.open(fp, encoding="utf-8-sig") as f_:
+                lines = [x_.strip() for x_ in f_ if x_.strip() and not x_.strip().startswith(u"#")]
+            out["bash"] = [(names.get(_skey(x_), x_), 0.0) for x_ in lines if _skey(x_) not in ex]
+            out["src"] = DV_BASH_FILE
+        except Exception as e:
+            out["problem"] = u"%s не прочитан: %s" % (DV_BASH_FILE, e)
+    if not names:
+        return out
+    ok_ = lambda s_: _skey(s_) in names and _skey(s_) not in ex
+    try:
+        if not out["bash"] and bash_keys:
+            ok, df, _ = _bq_query(
+                u"SELECT store, COUNT(DISTINCT LTRIM(barcode,'0')) k, COUNT(DISTINCT transaction_id) n, SUM(quantity) q, "
+                u"COUNT(DISTINCT DATE_TRUNC(DATE(transaction_datetime), WEEK)) w FROM `%s` WHERE transaction_datetime >= "
+                u"DATETIME_SUB((SELECT MAX(transaction_datetime) FROM `%s`), INTERVAL %d DAY) AND LTRIM(barcode,'0') IN (%s) GROUP BY 1"
+                % (TURNOVER_TABLE, TURNOVER_TABLE, DV_BASH_DAYS, u",".join(u"'%s'" % k_ for k_ in sorted(bash_keys))))
+            if not ok:
+                raise RuntimeError(df)
+            num = lambda c_: pd.to_numeric(df[c_], errors="coerce").fillna(0)
+            rows = [(names.get(_skey(s_), str(s_)), int(k_), int(n_), float(q_), int(w_))
+                    for s_, k_, n_, q_, w_ in zip(df["store"], num("k"), num("n"), num("q"), num("w"))]
+            out["bash"] = dv_bash_pick(rows, ok_)
+        ok, df, _ = _bq_query(
+            u"SELECT store, SUM(quantity) q FROM `%s` WHERE quantity>0 AND (LOWER(supplier) LIKE '%%каваапарат%%' "
+            u"OR LOWER(supplier) LIKE '%%кава апарат%%' OR LOWER(supplier) LIKE '%%якобз%%') AND "
+            u"SAFE_CAST(SUBSTR(CAST(doc_date AS STRING), 1, 10) AS DATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL %d DAY) GROUP BY 1"
+            % (INCOMING_TABLE, DV_COFFEE_DAYS))
+        if not ok:
+            raise RuntimeError(df)
+        q_ = pd.to_numeric(df["q"], errors="coerce").fillna(0.0)
+        out["coffee"] = sorted([(names[_skey(s_)], float(a_)) for s_, a_ in zip(df["store"], q_) if ok_(s_)],
+                               key=lambda x_: -x_[1])
+    except Exception as e:
+        out["problem"] = u"нет данных BigQuery: %s" % e
+    return out
+
+
+def run_dovyvoz(dirs, shops=None, top_n=None, points=None, min_sum=None, keep=None, kegs=None, bash_point=None, coffee_point=None):
     """Довывоз после перехода на ЮА: зачистка остатка из ВХОД_ВЫВОЗ\\ДОВЫВОЗ (остаётся только keep) -> распределение с
     приоритетом точек. Один магазин или несколько; магазины из папки ДОВЫВОЗ получателями не бывают.
     Результат: ВЫВОЗ\\<дата>_довывоз\\<магазин>\\ТСД_по_адресам. -> dict(ok, vyvoz, splits, stats, keep, in_dir, problem)"""
@@ -8325,6 +8540,22 @@ def run_dovyvoz(dirs, shops=None, top_n=None, points=None, min_sum=None, keep=No
         return out
     names = [sh.get("shop") or os.path.basename(sh["folder"]) for sh in done]
     excl = list(dict.fromkeys(list(shops) + names + [x[0] for x in found]))
+    if bash_point and _skey(bash_point) in set(_skey(x_) for x_ in excl):
+        out["problem"] = u"Заморозку Бащинского нельзя везти на %s: это магазин довывоза" % bash_point
+        return out
+    bkeys = load_bash_frozen(dirs)
+    pinfo = dovyvoz_points(dirs, excl, bkeys)
+    bl = [s_ for s_, _q in pinfo.get("bash") or []]
+    cl = [s_ for s_, _q in pinfo.get("coffee") or []]
+    bp = None
+    if bash_point:
+        bp = next((s_ for s_ in bl if _skey(s_) == _skey(bash_point)), None) or bash_point
+    elif bl:
+        bp = bl[0]
+    sel = set(_skey(p_) for p_ in (points or []))
+    cp = next((s_ for s_ in cl if _skey(s_) in sel), None) or coffee_point or (cl[0] if cl else None)
+    dv = {"bash_point": bp, "bash_fridges": bl, "coffee_point": cp, "coffee_points": cl, "bash_keys": bkeys}
+    out["points"], out["bash_point"], out["coffee_point"] = pinfo, bp, cp
     out["ok"] = True
     for sh, nm in zip(done, names):
         lp = str(sh.get("list") or u"")
@@ -8334,7 +8565,7 @@ def run_dovyvoz(dirs, shops=None, top_n=None, points=None, min_sum=None, keep=No
             out["splits"].append((nm, {"ok": False, "problems": [u"нет листа вывоза %s" % lp], "summary": [], "files": []}))
             out["ok"] = False
             continue
-        sp = run_split(dirs, lp, top_n=top_n, dovyvoz=True, points=points, min_sum=min_sum, kegs=True, exclude=excl)
+        sp = run_split(dirs, lp, top_n=top_n, dovyvoz=True, points=points, min_sum=min_sum, kegs=True, exclude=excl, dv=dv)
         out["splits"].append((nm, sp))
         out["ok"] = out["ok"] and bool(sp.get("ok"))
         if sp.get("ok"):                     # txt «весь список на склад» из зачистки в довывозе не нужен: убираем от ТСД
@@ -8353,6 +8584,11 @@ def _dovyvoz_text(out):
         lines.append(u"[ОШИБКА] " + out["problem"])
     lines.append(u"Оставляем в магазине: %s" % (u", ".join(dovyvoz_cat_label(k) for k in out.get("keep", []))
                                                or u"ничего (кроме того, что не грузится в ТСД)"))
+    if out.get("points") is not None:
+        lines.append(u"Заморозка Бащинского: на %s" % (out.get("bash_point") or u"точка не определена (поделена по спросу)"))
+        lines.append(u"Стаканы, кофе, сырьё кофеаппарата: на %s" % (out.get("coffee_point") or u"точка не определена (поделены по спросу)"))
+        if (out.get("points") or {}).get("problem"):
+            lines.append(u"[ВНИМАНИЕ] точки Бащинского / кофеаппарата: " + out["points"]["problem"])
     rt = globals().get("_result_text")
     if isinstance(out.get("vyvoz"), dict) and rt:
         try:
@@ -8366,6 +8602,8 @@ def _dovyvoz_text(out):
             lines.append(u"  %-45s %-9s %5d поз. %12.2f грн" % (lab, s_, n, sm))
     for nm, sp in out.get("splits", []):
         lines.append(u"=== Довывоз: %s ===" % nm)
+        for w_ in (sp or {}).get("dv_warn") or []:
+            lines.append(u"[ВНИМАНИЕ] " + w_)
         lines.append(_split_text(sp))
     lines.append(u"ТСД: только файлы из папок %s; txt «весь список» убраны в %s" % (SPLIT_OUT_DIR, DOVYVOZ_FULL_LIST_DIR))
     return u"\n".join(lines)
@@ -8391,6 +8629,31 @@ def self_test_dovyvoz():
     ck(cats.get(("sup", sup_norm(u"Пакети"))) == "bag", u"Пакети -> пакеты")
     ck(cats.get(("sup", sup_norm(u"Ферма"))) == "perish", u"Ферма -> скоропорт")
     ck(cats.get(("sup", sup_norm(u"Кулінарія"))) == "kul", u"Кулінарія -> кулинария")
+    _lst = pd.DataFrame({"bc": [u"4820000000011", u"4820000000028", u"4820000000035", u"4820000000042"],
+                         "name": [u"Піца Цезар з Куркою Легко 400г", u"Стакан паперовий 250мл", u"Пакет майка 30x50", u"Вода Моршинська 1,5л"],
+                         "sup": [u"Бащінський МК", u"", u"", u"Моршинська"], "sum": [100.0, 50.0, 20.0, 30.0]})
+    _dvc = {"bash_point": u"Т-Б", "bash_fridges": [u"Т-Б", u"Т-Б2"], "coffee_point": u"Т-К", "bash_keys": {u"4820000000011"}}
+    _f, _n, _no, _w = dovyvoz_force(_lst, r, rules, _dvc)
+    ck(dv_is_bash(u"Бащінський МК", u"x") and dv_is_bash(u"", u"Бащинська ковбаса") and not dv_is_bash(u"Хладік", u"Піца"),
+       u"распознавание Бащинского")
+    ck(_f.get(u"4820000000011", (None,))[0] == u"Т-Б", u"Бащинский -> одна точка с холодильником")
+    ck(_f.get(u"4820000000028", (None,))[0] == u"Т-К", u"стаканы -> точка с кофеаппаратом")
+    ck(u"4820000000035" in _n and u"4820000000035" not in _f, u"пакеты: не на склад, делятся по точкам")
+    ck(u"4820000000042" not in _n, u"обычный товар не трогаем")
+    ck(any(u"нет холодильника" in w_ and u"Т-Б" in w_ for w_ in dovyvoz_point_warns(_f, [u"А", u"Б"], _dvc)),
+       u"предупреждение: среди выбранных нет холодильника")
+    ck(not dovyvoz_point_warns(_f, [u"А", u"Т-Б2"], _dvc), u"холодильник среди выбранных - без предупреждения")
+    _f2, _n2, _no2, _w2 = dovyvoz_force(_lst, r, rules, {"bash_keys": {u"4820000000011"}})
+    ck(u"4820000000011" in _n2 and not _f2 and len(_w2) == 2, u"точек нет - предупреждение, делится по спросу")
+    _f3 = dovyvoz_force(pd.DataFrame({"bc": [u"4820000000059"], "name": [u"Ковбаса Бащинська"], "sup": [u"Бащінський МК"],
+                                      "sum": [10.0]}), r, rules, _dvc)[0]
+    ck(not _f3, u"Бащинский не из списка заморозки - как обычный товар")
+    _rows = [(u"Небесної Сотні 14/1", 12, 59, 74.4, 9), (u"Іскрінський 19", 13, 58, 66.0, 10), (u"Байрона 163", 9, 24, 28.1, 9),
+             (u"Грозненська 38", 3, 20, 22.0, 7), (u"Пр-т Тракторобудiвникiв 95", 4, 12, 13.0, 8), (u"Тарасівський 10", 1, 1, 1.0, 1)]
+    _pk = [s_ for s_, _q in dv_bash_pick(_rows, lambda s_: True)]
+    ck(_pk == [u"Небесної Сотні 14/1", u"Іскрінський 19", u"Байрона 163"],
+       u"холодильники Бащинского: от %d позиций и %d недель, больше чеков - первой: %s" % (DV_BASH_MIN_SKUS, DV_BASH_MIN_WEEKS, _pk))
+    ck(len(DV_BASH_FROZEN_DEFAULT) == 14 and all(bc_key(b_) for b_, _n in DV_BASH_FROZEN_DEFAULT), u"список заморозки Бащинского")
     return ok[0]
 
 
@@ -8418,6 +8681,7 @@ def main_dovyvoz(argv):
     ap.add_argument("--top", type=int, default=None)
     ap.add_argument("--keep", default=None, help=u"что оставить в магазине: %s; пустая строка - ничего" % u",".join(keys))
     ap.add_argument("--kegs", action="store_true", help=u"кеги везём на точки (на РЦ никогда)")
+    ap.add_argument("--bash-point", dest="bash_point", default="", help=u"куда вся заморозка Бащинского")
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
@@ -8434,7 +8698,7 @@ def main_dovyvoz(argv):
         return 0 if ok else 2
     sp_ = lambda s: [x.strip() for x in s.split(";") if x.strip()]
     out = run_dovyvoz(DIRS, shops=sp_(a.shops) or None, top_n=a.top, points=sp_(a.points) or None,
-                      min_sum=a.min_sum or None, keep=keep, kegs=(True if a.kegs else None))
+                      min_sum=a.min_sum or None, keep=keep, kegs=(True if a.kegs else None), bash_point=a.bash_point or None)
     print(_dovyvoz_text(out))
     return 0 if out.get("ok") else 2
 
