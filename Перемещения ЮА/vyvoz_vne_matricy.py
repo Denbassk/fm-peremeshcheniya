@@ -1813,7 +1813,7 @@ def scan_stores(dirs):
 
 
 def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_ua=False, excl_suppliers=None, keep_keys=None,
-              sweep=False, manual=False):
+              sweep=False, manual=False, day_tag=None):
     """Весь расчёт без окон. shops=None -> все магазины из ВХОД_ВЫВОЗ\\МАГАЗИНЫ (кроме Полевой).
     ref - готовый справочник (для самотеста); иначе матрица берётся из BigQuery/кэша."""
     reset_report()
@@ -1881,7 +1881,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
         if abs((ud - day).days) > 1:
             R.check("WARN", u"Разные даты выгрузок", u"склад ЮА от %s, магазины от %s" % (ud.strftime("%d.%m.%Y"), day.strftime("%d.%m.%Y")))
     folders = shop_folders(sel)
-    day_dir = prepare_day_dir(dirs, day, SWEEP_DAY_TAG if sweep else u"", folders.values())
+    day_dir = prepare_day_dir(dirs, day, (day_tag if day_tag is not None else (SWEEP_DAY_TAG if sweep else u"")), folders.values())
     if day_dir is None:
         _fail_report(dirs, day)
         info["errors"] = len(R.errors)
@@ -3161,7 +3161,7 @@ def _selftest_qt_window(ck, d):
         res_ = qt_app.run(sys.modules[__name__], dirs=d, test_mode=True,
                           settings=QSettings(os.path.join(d.base, "ui_test.ini"), QSettings.IniFormat))
         keys = res_["keys"]
-        ck(set(keys) == {"vyvoz", "split", "upd", "fin", "serv", "log"}, "окно PySide6: экраны %s" % (keys,))
+        ck(set(keys) == {"vyvoz", "split", "upd", "fin", "serv", "log", "dv"}, "окно PySide6: экраны %s" % (keys,))
         ck(res_["targets"] == res_["targets_want"] and res_["targets"],
            "окно PySide6: «Всё на один магазин» = split_targets: %s" % (res_["targets"][:3],))
         ck(u"хинтинг полный" in res_["font"], "окно PySide6: %s" % res_["font"])
@@ -3251,7 +3251,7 @@ def _selftest_gui_logic(ck):
         ck(sc_["found"] == {} and isinstance(sc_["inputs"], list) and sc_["inputs"] and isinstance(sc_["errors"], list),
            "scan_inputs: пустая папка -> пусто, строки «Шаг 1» есть")
         # L11: тексты разделов
-        ck(set(UI_PAGES) == {"vyvoz", "split", "upd", "fin", "serv", "log"} and all(len(v_) == 2 for v_ in UI_PAGES.values()), "UI_PAGES")
+        ck(set(UI_PAGES) == {"vyvoz", "split", "upd", "fin", "serv", "log", "dv"} and all(len(v_) == 2 for v_ in UI_PAGES.values()), "UI_PAGES")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -4811,8 +4811,34 @@ def demand_shares(r, pts, rev, sales, grp, dem):
     return shop_shares(r.bc, pts, rev, {}), u"оборот"
 
 
+# ===================== ДОВЫВОЗ ПОСЛЕ ПЕРЕХОДА =====================
+# Решение 20.10.2026: остаток магазинов, перешедших на ЮА, вывозится полностью, кроме кулинарии, расходников, сырья
+# кофеаппарата и строк vyvoz_perishable.csv (профиль зачистки). Приоритет - точки: товар с РЦ едет на склад, только если
+# его нигде не продают и он есть в матрице. Порога суммы на точку нет (или своя сумма), точки можно выбрать вручную.
+# Кеги - по выбору пользователя, на РЦ никогда. Остатки получателей не учитываются.
+DOVYVOZ_DAY_TAG = u"_довывоз"
+DOVYVOZ_IN_DIR = u"ДОВЫВОЗ"                # ВХОД_ВЫВОЗ\ДОВЫВОЗ: «Состояние склада» Family магазинов для довывоза
+DOVYVOZ_RC_IF_NO_DEMAND = True             # False -> товар с РЦ без спроса тоже на точки (лидеру по спросу на список)
+DOVYVOZ_FULL_LIST_DIR = u"_список_целиком_не_для_ТСД"
+
+
+def dovyvoz_route(kind, why, key, sold_keys, ref):
+    """Маршрут позиции в довывозе -> (вид, основание). kind/why - обычный маршрут по происхождению (decide_route,
+    раскомплектация, кеги). Прямая поставка, раскомплектация, кеги - на точки, как и было. Товар с РЦ: продаётся хоть на
+    одной живой точке не на ЮА - на точки; нигде не продаётся и есть в матрице - на РЦ; вне матрицы - тоже на точки."""
+    if kind != KIND_RC:
+        return kind, u"довывоз: " + why
+    if key in sold_keys:
+        return KIND_SHOPS, u"довывоз: с РЦ, но продаётся на точках -> на точки (%s)" % why
+    in_m = ref is not None and (key in ref.matrix or _resolve(ref, key) in ref.matrix)
+    if in_m and DOVYVOZ_RC_IF_NO_DEMAND:
+        return KIND_RC, u"довывоз: с РЦ, нигде не продаётся, есть в матрице -> на склад (%s)" % why
+    return KIND_SHOPS, (u"довывоз: с РЦ, нигде не продаётся, %s -> на точки по спросу на список, проверьте (%s)"
+                        % (u"в матрице" if in_m else u"вне матрицы", why))
+
+
 def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=False, auto_points=False, per_shop=(5000.0, 7000.0),
-              target=None):
+              target=None, dovyvoz=False, points=None, min_sum=None, kegs=True, exclude=None):
     """Исправленный лист вывоза -> txt для ТСД по адресам + xlsx для проверки. -> dict(ok, out_dir, files, problems, summary)
     Точки - по спросу на товары ЭТОГО списка (решение владельца 09.10.2026), не меньше per_shop[0] грн на точку в обоих режимах.
     target - «весь вывоз на один магазин»: всё, что обычно делится по точкам (прямые поставки, кеги), едет на этот магазин;
@@ -4834,6 +4860,24 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
     if lst.empty:
         info["problems"].append(u"В файле нет позиций")
         return info
+    if dovyvoz:                                         # довывоз: без подбора по сумме и без «всё на один магазин»
+        auto_points, target = False, None
+        per_shop = (0.0, 0.0) if (points or not min_sum) else (float(min_sum), float(min_sum))
+        info["notes"] = list(info.get("notes") or []) + [
+            u"ДОВЫВОЗ: всё на точки; на %s - только товар с РЦ, который нигде не продаётся и есть в матрице. Порог суммы на точку: %s"
+            % (SPLIT_RC_NAME, u"нет (точки выбраны вручную)" if points else (u"%.0f грн" % per_shop[0] if per_shop[0] else u"нет"))]
+        if not kegs:
+            _kg = [bool(is_keg(nm_)) for nm_ in lst["name"]]
+            if any(_kg):
+                _kl = lst[_kg]
+                info["kegs_left"] = [(b_, n_, float(q_)) for b_, n_, q_ in zip(_kl["bc"], _kl["name"], _kl["qty"])]
+                info["notes"] = list(info.get("notes") or []) + [
+                    u"Кеги не везём (выбор пользователя): %d поз. остаются в магазине: %s"
+                    % (len(_kl), u"; ".join(u"%s %s" % (b_, n_) for b_, n_ in zip(_kl["bc"], _kl["name"])))]
+                lst = lst[[not x_ for x_ in _kg]].reset_index(drop=True)
+                if lst.empty:
+                    info["ok"] = True
+                    return info
     keg_bcs = [b for b, nm_ in zip(lst["bc"], lst["name"]) if is_keg(nm_)]
     keg_size = {bc_key(b): keg_size_from_name(nm_) for b, nm_ in zip(lst["bc"], lst["name"]) if is_keg(nm_)}
     try:
@@ -4912,10 +4956,28 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
                    u"кег: этот ШК нигде не продавался за %d дн. - на точку с наибольшим спросом на список, проверьте" % SPLIT_DAYS_BC)
         routes.append((kind, why, sup or u"(поставщик не определён)"))
     lst["kind"], lst["why"], lst["sup"] = [x[0] for x in routes], [x[1] for x in routes], [x[2] for x in routes]
+    if dovyvoz:                                         # довывоз: товар с РЦ тоже на точки, если его где-то продают
+        _ex0 = set(_skey(x_) for x_ in (exclude or []))
+        _sold = set(kk_ for (kk_, s_), v_ in sales.items() if v_ > 0 and _skey(s_) not in _ex0)
+        _dv = [dovyvoz_route(k_, w_, bc_key(b_), _sold, ref) for b_, k_, w_ in zip(lst["bc"], lst["kind"], lst["why"])]
+        lst["kind"], lst["why"] = [x_[0] for x_ in _dv], [x_[1] for x_ in _dv]
     rank, dem = rank_by_demand(lst, list(alive["store"]), rev, sales)
     grp = group_sales(lst, sales)
     info["demand"] = dem
+    if dovyvoz and exclude:                             # другие магазины довывоза получателями не бывают
+        _ex = set(_skey(x_) for x_ in exclude)
+        rank = [s_ for s_ in rank if _skey(s_) not in _ex]
     shops = [tgt] if tgt else rank[:top_n]
+    if dovyvoz and points:                              # точки выбраны вручную
+        _pk = {_skey(s_): s_ for s_ in rank}
+        _bad = [p_ for p_ in points if _skey(p_) not in _pk]
+        if _bad:
+            info["problems"].append(u"Точки не приняты: %s. Получателем может быть только работающая точка не на ЮА и не магазин довывоза"
+                                    % u"; ".join(_bad))
+            return info
+        shops = list(dict.fromkeys(_pk[_skey(p_)] for p_ in points))
+        top_n = len(shops)
+        info["top_n"] = top_n
     if len(shops) < top_n and not auto_points:
         info["problems"].append(u"Нашлось только %d точек-получателей из %d" % (len(shops), top_n))
     if not tgt:
@@ -8032,8 +8094,356 @@ def run_app2(dirs=None, test_mode=False):
     return 0
 
 
+def dovyvoz_in_dir(dirs):
+    """ВХОД_ВЫВОЗ\\ДОВЫВОЗ: «Состояние склада» Family магазинов для довывоза (один файл на магазин)."""
+    return os.path.join(dirs.inp, DOVYVOZ_IN_DIR)
+
+
+# Что можно оставить в магазине (галочки на экране «Довывоз»): ключ, подпись, оставлять по умолчанию. Решение 20.10.2026:
+# скоропорт и заморозку вывозим, остальное - по выбору; товар с ШК не 6-14 цифр и тех. товар остаются всегда.
+DOVYVOZ_CATS = (
+    ("kul", u"Кулинария и выпечка", True),
+    ("cup", u"Стаканы, крышки, комплектация розлива", True),
+    ("coffee", u"Кофе и сырьё кофеаппарата", True),
+    ("bag", u"Пакеты", True),
+    ("veg", u"Розлив и весовые овощи", True),
+    ("keg", u"Кеги", True),
+    ("other", u"Прочие исключения обычного вывоза", True),
+    ("frozen", u"Заморозка и мороженое", False),
+    ("perish", u"Скоропорт и молочка (vyvoz_perishable.csv)", False),
+)
+DOVYVOZ_KEEP_DEFAULT = frozenset(k for k, _l, d in DOVYVOZ_CATS if d)
+DV_FROZEN_RE = re.compile(u"морозив|морожен|пельмен|вареник|нагетс|заморож|хладік|хладик|(^|\\s)п/ф(\\s|$)")
+
+
+def _dv_rules_from_rows(rows):
+    """Строки vyvoz_perishable.csv (Тип, Значение, Комментарий) -> [(тип, значение, категория)]. Категория - по комментарию
+    и значению: заморозка / мороженое, пакет, кофе / кава, овощи, кулинария; остальное - скоропорт."""
+    out = []
+    for row in rows:
+        row = list(row) + [u"", u"", u""]
+        t, val = str(row[0]).strip().lower(), str(row[1]).strip()
+        c = (str(row[2]) + u" " + val).lower()
+        if not val or val.lower() == u"nan":
+            continue
+        if u"кулін" in c or u"кулин" in c:
+            cat = "kul"
+        elif u"замороз" in c or u"морож" in c:
+            cat = "frozen"
+        elif u"пакет" in c:
+            cat = "bag"
+        elif u"коф" in c or u"кав" in c:
+            cat = "coffee"
+        elif u"овощ" in c or u"овоч" in c:
+            cat = "veg"
+        else:
+            cat = "perish"
+        if t.startswith(u"постав"):
+            out.append(("sup", sup_norm(val), cat))
+        elif t.startswith(u"назв"):
+            out.append(("name", u"^" + nname(val[1:]) if val.startswith(u"^") else nname(val), cat))
+        elif t in (u"шк", u"штрих-код", u"штрихкод") and bc_key(val):
+            out.append(("bc", bc_key(val), cat))
+    return out
+
+
+def load_dovyvoz_rules(dirs):
+    try:
+        df = _csv_default(dirs, SWEEP_STAY_FILE, DEFAULT_SWEEP_STAY, [u"Тип", u"Значение", u"Комментарий"])
+        rows = df.astype(str).values.tolist()
+    except Exception as e:
+        R.check("WARN", u"Довывоз: справочник категорий", u"%s не прочитан (%s): беру список по умолчанию" % (SWEEP_STAY_FILE, e))
+        rows = DEFAULT_SWEEP_STAY
+    return _dv_rules_from_rows(rows)
+
+
+def _dv_rule_cat(r, nn, rules):
+    sup = sup_norm(getattr(r, "supplier", None))
+    for t, val, cat in rules:
+        if t == "sup" and sup and sup == val:
+            return cat, u"поставщик %s" % r.supplier
+        if t == "bc" and str(r.key) == val:
+            return cat, u"ШК по справочнику"
+        if t == "name":
+            if val.startswith(u"^"):
+                w = val[1:]
+                if w and (nn == w or nn.startswith(w + u" ")):
+                    return cat, u"название: %s" % w
+            elif val and val in nn:
+                return cat, u"название: %s" % val
+    return u"", u""
+
+
+def dovyvoz_cat(r, ref, rules):
+    """Категория позиции для довывоза -> (ключ из DOVYVOZ_CATS | "tech" | "", пояснение). "" - обычный товар."""
+    nn = nname(r.name)
+    if not RE_BC_OK.match(str(r.bc)):
+        return "tech", u"некорректный ШК (не 6-14 цифр): в ТСД не загрузить, вывозить вручную"
+    if str(r.verdict) == "KUL" or KUL_RE.match(nn):
+        return "kul", u"кулинария / выпечка"
+    if is_keg(r.name):
+        return "keg", u"кег"
+    why = excl_reason(r.bc, r.key, r.name, ref) or u""
+    w = why.lower()
+    if u"кег" in w:
+        return "keg", why
+    if u"тех. товар" in w:
+        return "tech", why
+    if any(x in w for x in (u"стакан", u"крышк", u"комплектац", u"ручк", u"пляшк")):
+        return "cup", why
+    if u"пакет" in w:
+        return "bag", why
+    if u"коф" in w or u"кав" in w:
+        return "coffee", why
+    if any(x in w for x in (u"овощ", u"овоч", u"розлив", u"развес")):
+        return "veg", why
+    cat, how = _dv_rule_cat(r, nn, rules)
+    if cat:
+        return cat, how
+    if DV_FROZEN_RE.search(nn):
+        return "frozen", u"заморозка (по названию)"
+    if why:
+        return "other", why
+    return u"", u""
+
+
+def dovyvoz_cat_label(cat):
+    if not cat:
+        return u"Обычный товар"
+    if cat == "tech":
+        return u"Не грузится в ТСД / тех. товар"
+    return dict((k, l) for k, l, _d in DOVYVOZ_CATS).get(cat, cat)
+
+
+def dovyvoz_verdicts(res, ref, keep, rules, stats=None):
+    """Довывоз: вывозим ВСЁ, кроме выбранных категорий keep (и того, что не грузится в ТСД). Подменяет sweep_verdicts на
+    время run_dovyvoz. stats: {(категория, "stay"|"go"): [позиций, сумма]}."""
+    keep = set(keep or ())
+    out = res.copy()
+    verd, reas = list(out["verdict"]), list(out["reason"])
+    for i, r in enumerate(out.itertuples(index=False)):
+        cat, how = dovyvoz_cat(r, ref, rules)
+        sm = pd.to_numeric(getattr(r, "sum", 0), errors="coerce")
+        sm = 0.0 if pd.isna(sm) else float(sm)
+        if cat and (cat == "tech" or cat in keep):
+            verd[i] = "KUL" if cat == "kul" else "EXCL"
+            reas[i] = u"остаётся (%s): %s" % (dovyvoz_cat_label(cat), how)
+            st = "stay"
+        else:
+            verd[i] = "VYVOZ"
+            reas[i] = u"довывоз" + (u" (%s: %s)" % (dovyvoz_cat_label(cat), how) if cat else u"")
+            st = "go"
+        if stats is not None:
+            e = stats.setdefault((cat or u"", st), [0, 0.0])
+            e[0] += 1
+            e[1] += sm
+    out["verdict"], out["reason"] = verd, reas
+    return out
+
+
+def dovyvoz_stat_rows(stats):
+    """-> [(категория, осталось/уехало, позиций, сумма)]: сначала то, что осталось."""
+    rows = []
+    for (cat, st), (n, sm) in sorted((stats or {}).items(), key=lambda kv: (kv[0][1] != "stay", dovyvoz_cat_label(kv[0][0]))):
+        rows.append((dovyvoz_cat_label(cat), u"осталось" if st == "stay" else u"уехало", int(n), float(sm)))
+    return rows
+
+
+def dovyvoz_shop_name(path):
+    """Имя магазина из выгрузки «Состояние склада» без чтения всего файла: колонка «Склад» первой строки товара,
+    иначе название в кавычках из заголовка, иначе ''."""
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws, title, col = wb.worksheets[0], u"", None
+            for i, row in enumerate(ws.iter_rows(max_row=40, values_only=True)):
+                vals = [u"" if v is None else str(v).strip() for v in row]
+                if i == 0 and vals:
+                    m = re.search(u'"([^"]+)"', vals[0])
+                    title = m.group(1).strip() if m else u""
+                if col is None:
+                    low = [rz.norm(v) for v in vals]
+                    if any(u"штрих" in v for v in low):
+                        col = next((j for j, v in enumerate(low) if v.startswith(u"склад")), -1)
+                    continue
+                if 0 <= col < len(vals) and vals[col]:
+                    return vals[col]
+            return title
+        finally:
+            wb.close()
+    except Exception:
+        return u""
+
+
+def dovyvoz_shops(dirs):
+    """Выгрузки в ВХОД_ВЫВОЗ\\ДОВЫВОЗ -> [(магазин, файл, ошибка)]."""
+    out = []
+    for p in list_xlsx(dovyvoz_in_dir(dirs)):
+        nm = dovyvoz_shop_name(p)
+        if not nm:
+            nm = re.sub(r"[\s_]*\d{1,4}[.\-_]\d{1,2}([.\-_]\d{2,4})?\s*$", u"", os.path.splitext(os.path.basename(p))[0]).strip()
+        out.append((nm, p, u"" if nm else u"не определён магазин"))
+    return out
+
+
+def run_dovyvoz(dirs, shops=None, top_n=None, points=None, min_sum=None, keep=None, kegs=None):
+    """Довывоз после перехода на ЮА: зачистка остатка из ВХОД_ВЫВОЗ\\ДОВЫВОЗ (остаётся только keep) -> распределение с
+    приоритетом точек. Один магазин или несколько; магазины из папки ДОВЫВОЗ получателями не бывают.
+    Результат: ВЫВОЗ\\<дата>_довывоз\\<магазин>\\ТСД_по_адресам. -> dict(ok, vyvoz, splits, stats, keep, in_dir, problem)"""
+    import copy
+    keep = set(DOVYVOZ_KEEP_DEFAULT if keep is None else keep)
+    if kegs is True:
+        keep.discard("keg")
+    elif kegs is False:
+        keep.add("keg")
+    d2 = copy.copy(dirs)
+    d2.stores = dovyvoz_in_dir(dirs)
+    os.makedirs(d2.stores, exist_ok=True)
+    out = {"ok": False, "vyvoz": None, "splits": [], "in_dir": d2.stores, "stats": {}, "keep": sorted(keep)}
+    found = [x for x in dovyvoz_shops(dirs) if not x[2]]
+    if not found:
+        out["problem"] = u"В %s нет выгрузок «Состояние склада» (Family)" % d2.stores
+        return out
+    have = set(_skey(x[0]) for x in found)
+    shops = list(shops or [x[0] for x in found if not _is_polevaya(x[0])])
+    bad = [s for s in shops if _skey(s) not in have]
+    if bad:
+        out["problem"] = u"Нет выгрузки в %s для: %s" % (d2.stores, u"; ".join(bad))
+        return out
+    rules = load_dovyvoz_rules(dirs)
+    g = globals()
+    orig = g["sweep_verdicts"]
+    g["sweep_verdicts"] = lambda res, _rules, ref: dovyvoz_verdicts(res, ref, keep, rules, out["stats"])
+    try:
+        info = run_vyvoz(d2, shops=shops, use_ua=False, sweep=True, day_tag=DOVYVOZ_DAY_TAG)
+    finally:
+        g["sweep_verdicts"] = orig
+    out["vyvoz"] = info
+    done = [sh for sh in (info or {}).get("shops", []) if str(sh.get("status")) == "OK" and sh.get("folder")]
+    if not done:
+        out["problem"] = u"Списки довывоза не сформированы - подробности в проверках выше"
+        return out
+    names = [sh.get("shop") or os.path.basename(sh["folder"]) for sh in done]
+    excl = list(dict.fromkeys(list(shops) + names + [x[0] for x in found]))
+    out["ok"] = True
+    for sh, nm in zip(done, names):
+        lp = str(sh.get("list") or u"")
+        if not (lp.lower().endswith((".xlsx", ".xlsm")) and os.path.isfile(lp)):
+            lp = os.path.join(sh["folder"], os.path.basename(sh["folder"]) + ".xlsx")
+        if not os.path.isfile(lp):
+            out["splits"].append((nm, {"ok": False, "problems": [u"нет листа вывоза %s" % lp], "summary": [], "files": []}))
+            out["ok"] = False
+            continue
+        sp = run_split(dirs, lp, top_n=top_n, dovyvoz=True, points=points, min_sum=min_sum, kegs=True, exclude=excl)
+        out["splits"].append((nm, sp))
+        out["ok"] = out["ok"] and bool(sp.get("ok"))
+        if sp.get("ok"):                     # txt «весь список на склад» из зачистки в довывозе не нужен: убираем от ТСД
+            arc = os.path.join(sh["folder"], DOVYVOZ_FULL_LIST_DIR)
+            for f_ in os.listdir(sh["folder"]):
+                p_ = os.path.join(sh["folder"], f_)
+                if f_.lower().endswith(".txt") and os.path.isfile(p_) and not f_.upper().startswith(u"ЧИТАЙ"):
+                    os.makedirs(arc, exist_ok=True)
+                    shutil.move(p_, os.path.join(arc, f_))
+    return out
+
+
+def _dovyvoz_text(out):
+    lines = []
+    if out.get("problem"):
+        lines.append(u"[ОШИБКА] " + out["problem"])
+    lines.append(u"Оставляем в магазине: %s" % (u", ".join(dovyvoz_cat_label(k) for k in out.get("keep", []))
+                                               or u"ничего (кроме того, что не грузится в ТСД)"))
+    rt = globals().get("_result_text")
+    if isinstance(out.get("vyvoz"), dict) and rt:
+        try:
+            lines.append(rt(out["vyvoz"]))
+        except Exception:
+            pass
+    st = dovyvoz_stat_rows(out.get("stats"))
+    if st:
+        lines.append(u"По категориям (все магазины):")
+        for lab, s_, n, sm in st:
+            lines.append(u"  %-45s %-9s %5d поз. %12.2f грн" % (lab, s_, n, sm))
+    for nm, sp in out.get("splits", []):
+        lines.append(u"=== Довывоз: %s ===" % nm)
+        lines.append(_split_text(sp))
+    lines.append(u"ТСД: только файлы из папок %s; txt «весь список» убраны в %s" % (SPLIT_OUT_DIR, DOVYVOZ_FULL_LIST_DIR))
+    return u"\n".join(lines)
+
+
+def self_test_dovyvoz():
+    ok = [True]
+
+    def ck(c, m):
+        if not c:
+            ok[0] = False
+            print(u"[ПРОВАЛ] довывоз: " + m)
+    r = Ref()
+    r.matrix, r.recode = {"111": (u"А", u"", u"")}, {"999": "111"}
+    ck(dovyvoz_route(KIND_RC, u"x", "111", {"111"}, r)[0] == KIND_SHOPS, u"с РЦ и продаётся -> точки")
+    ck(dovyvoz_route(KIND_RC, u"x", "111", set(), r)[0] == KIND_RC, u"с РЦ, не продаётся, в матрице -> РЦ")
+    ck(dovyvoz_route(KIND_RC, u"x", "999", set(), r)[0] == KIND_RC, u"матрица через перекодировку -> РЦ")
+    ck(dovyvoz_route(KIND_RC, u"x", "222", set(), r)[0] == KIND_SHOPS, u"с РЦ, вне матрицы -> точки")
+    ck(dovyvoz_route(KIND_SHOPS, u"x", "222", set(), r)[0] == KIND_SHOPS, u"прямая -> точки")
+    rules = _dv_rules_from_rows(DEFAULT_SWEEP_STAY)
+    cats = dict(((t, v), c) for t, v, c in rules)
+    ck(cats.get(("sup", sup_norm(u"Хладік"))) == "frozen", u"Хладік -> заморозка")
+    ck(cats.get(("sup", sup_norm(u"Пакети"))) == "bag", u"Пакети -> пакеты")
+    ck(cats.get(("sup", sup_norm(u"Ферма"))) == "perish", u"Ферма -> скоропорт")
+    ck(cats.get(("sup", sup_norm(u"Кулінарія"))) == "kul", u"Кулінарія -> кулинария")
+    return ok[0]
+
+
+try:
+    UI_PAGES["dv"] = (u"Довывоз после перехода",
+                      u"Остаток магазинов, перешедших на ЮА, вывозится полностью. Галочками отмечаете, что остаётся в магазине. "
+                      u"Один магазин или несколько сразу (выгрузки Family - в ВХОД_ВЫВОЗ\\ДОВЫВОЗ). Всё едет на точки; на "
+                      u"Полевая-Склад - только товар РЦ, который нигде не продаётся и есть в матрице. Файлы ТСД - в "
+                      u"ВЫВОЗ\\<дата>_довывоз\\<магазин>\\ТСД_по_адресам.")
+except NameError:
+    pass
+
+
+def main_dovyvoz(argv):
+    """vyvoz_vne_matricy.py --dovyvoz [--shops "А;Б"] [--points "Т1;Т2" | --min-sum 3000] [--top 10]
+    [--keep "kul,cup,coffee,bag,veg,keg,other"] [--kegs] [--offline] [--selftest]"""
+    global BQ_OFFLINE
+    import argparse
+    keys = [k for k, _l, _d in DOVYVOZ_CATS]
+    ap = argparse.ArgumentParser(prog="vyvoz_vne_matricy.py --dovyvoz")
+    ap.add_argument("--dovyvoz", action="store_true")
+    ap.add_argument("--shops", default="")
+    ap.add_argument("--points", default="")
+    ap.add_argument("--min-sum", dest="min_sum", type=float, default=0.0)
+    ap.add_argument("--top", type=int, default=None)
+    ap.add_argument("--keep", default=None, help=u"что оставить в магазине: %s; пустая строка - ничего" % u",".join(keys))
+    ap.add_argument("--kegs", action="store_true", help=u"кеги везём на точки (на РЦ никогда)")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--selftest", action="store_true")
+    a = ap.parse_args(argv)
+    if a.offline:
+        BQ_OFFLINE = True
+    keep = None if a.keep is None else [x.strip() for x in a.keep.split(",") if x.strip()]
+    bad = [k for k in (keep or []) if k not in keys]
+    if bad:
+        print(u"Неизвестные категории в --keep: %s (есть: %s)" % (u", ".join(bad), u",".join(keys)))
+        return 2
+    ok = self_test(gui=False) and self_test_dovyvoz()
+    print(u"САМОТЕСТ: %s" % (u"OK" if ok else u"ПРОВАЛ"))
+    if a.selftest or not ok:
+        return 0 if ok else 2
+    sp_ = lambda s: [x.strip() for x in s.split(";") if x.strip()]
+    out = run_dovyvoz(DIRS, shops=sp_(a.shops) or None, top_n=a.top, points=sp_(a.points) or None,
+                      min_sum=a.min_sum or None, keep=keep, kegs=(True if a.kegs else None))
+    print(_dovyvoz_text(out))
+    return 0 if out.get("ok") else 2
+
+
 def main(argv=None):
     global BQ_OFFLINE
+    _argv_d = list(sys.argv[1:] if argv is None else argv)
+    if "--dovyvoz" in _argv_d:
+        return main_dovyvoz(_argv_d)
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     if args["offline"]:
         BQ_OFFLINE = True
