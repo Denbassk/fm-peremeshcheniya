@@ -125,6 +125,17 @@ QTableView:focus {{ border: 2px solid {c['focus']}; }}
 QHeaderView::section {{ background: {c['surface_low']}; color: {c['text_muted']}; border: none;
     border-bottom: 1px solid {c['outline_variant']}; padding: {T.SPACING_XS + 2}px {T.SPACING_SM}px;
     font-size: {T.TYPO_LABEL_MD[0]}px; font-weight: 600; }}
+/* ---------- списки с галочками (Довывоз: магазины, точки) ---------- */
+QListWidget {{ background: {c['surface']}; alternate-background-color: {c['surface_low']}; color: {c['text']};
+    border: 1px solid {c['outline_variant']}; border-radius: {T.RADIUS_DEFAULT}px; outline: none; }}
+QListWidget::item {{ color: {c['text']}; padding: 2px {T.SPACING_XS}px; border: none; }}
+QListWidget::item:hover {{ background: {c['surface_mid']}; }}
+QListWidget::item:selected {{ background: {c['selection_bg']}; color: {c['selection_text']}; }}
+QListWidget:focus {{ border: 2px solid {c['focus']}; }}
+QListWidget::indicator {{ width: 16px; height: 16px; border: 2px solid {c['outline']}; border-radius: {T.RADIUS_SM}px;
+    background: {c['surface']}; }}
+QListWidget::indicator:checked {{ background: {c['checked']}; border-color: {c['checked']}; image: url("{check_png}"); }}
+QListWidget::indicator:hover {{ border-color: {c['focus']}; }}
 QPlainTextEdit, QTextEdit {{ background: {c['surface']}; border: 1px solid {c['outline_variant']}; border-radius: {T.RADIUS_DEFAULT}px;
     padding: {T.SPACING_SM}px; selection-background-color: {c['selection_bg']}; selection-color: {c['selection_text']}; }}
 

@@ -25,6 +25,53 @@ NAV = (
 )
 
 
+# Русские кнопки стандартных окон Qt (Да/Нет/Отмена): перевод qtbase_ru из PySide6,
+# а если его нет в сборке exe - фильтр переименовывает кнопки при показе окна.
+_RU_KEEP = []
+_RU_BTN = {"yes": u"Да", "no": u"Нет", "cancel": u"Отмена", "ok": u"OK", "save": u"Сохранить", "close": u"Закрыть",
+           "open": u"Открыть", "discard": u"Не сохранять", "retry": u"Повторить", "ignore": u"Пропустить",
+           "abort": u"Прервать", "apply": u"Применить", "yes to all": u"Да для всех", "no to all": u"Нет для всех",
+           "help": u"Справка", "reset": u"Сбросить", "restore defaults": u"По умолчанию"}
+
+
+def _install_ru():
+    """Подключить русский перевод Qt и подстраховку для кнопок. -> True, если перевод qtbase_ru найден."""
+    from PySide6.QtCore import QEvent, QLibraryInfo, QLocale, QObject, QTranslator
+    from PySide6.QtWidgets import QDialogButtonBox
+    app = QApplication.instance()
+    if app is None:
+        return False
+    if _RU_KEEP:
+        return any(isinstance(o, QTranslator) for o in _RU_KEEP)
+    QLocale.setDefault(QLocale("ru_RU"))
+    found = False
+    paths = [QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)]
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        paths += [os.path.join(base, "PySide6", "translations"), os.path.join(base, "translations")]
+    for pth in paths:
+        tr = QTranslator(app)
+        if tr.load("qtbase_ru", pth):
+            app.installTranslator(tr)
+            _RU_KEEP.append(tr)
+            found = True
+            break
+
+    class _RuButtons(QObject):
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Show and isinstance(obj, QDialogButtonBox):
+                for b in obj.buttons():
+                    t = _RU_BTN.get(b.text().replace("&", "").strip().lower())
+                    if t:
+                        b.setText(t)
+            return False
+
+    flt = _RuButtons(app)
+    app.installEventFilter(flt)
+    _RU_KEEP.append(flt)
+    return found
+
+
 class Page(QWidget):
     """Экран: заголовок с «?», прокручиваемое содержимое и закреплённая внизу панель действий."""
 
@@ -452,6 +499,7 @@ def place_window(win, settings):
 
 def make_app(argv=None):
     app = QApplication.instance() or QApplication(argv or sys.argv[:1])
+    _install_ru()
     app.setApplicationName(u"Вывоз вне матрицы")
     app.setOrganizationName("FamilyMarket")
     app.setWindowIcon(A.app_icon())
