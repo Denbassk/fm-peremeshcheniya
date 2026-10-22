@@ -18,11 +18,18 @@ LIST_HELP = (u"Распределение берёт листы ТОЛЬКО и�
              u"Новые листы - сверху. Файлы «проверка» и временные ~$ не показываются.")
 AUTO_HELP = (u"«Взять без правок» кладёт в «%s» копию листа «Вывезти на склад» (7 колонок, как в исправленных листах); "
              u"сам автоматический список не меняется.")
-HOW_HELP = (u"Товар РЦ всегда едет на %s (если галочка ниже включена), на точки он не делится. Прямые поставки делятся "
-            u"по торговым точкам с самым большим спросом на товары этого списка, не меньше 5 тыс. грн на точку.")
+HOW_HELP = (u"Товар РЦ едет на %s (если не включена галочка «весь товар на магазины»), на точки он не делится. Прямые "
+            u"поставки делятся по торговым точкам с самым большим спросом на товары этого списка, не меньше 5 тыс. грн на точку.")
 ONE_HELP = (u"Всё, что обычно делится по точкам (прямые поставки и кеги), едет на выбранный магазин; товар РЦ - как обычно на "
-            u"%s. В Распределение.xlsx - оценка продаж за %d дн. на этом магазине и сравнение магазинов. В списке только "
-            u"магазины, которые распределение примет: без Полевой, без магазинов ЮА и без магазина-источника.")
+            u"%s, а с галочкой «весь товар на магазины» тоже на этот магазин. В Распределение.xlsx - оценка продаж за %d дн. на "
+            u"этом магазине и сравнение магазинов. В списке только магазины, которые распределение примет: без Полевой, без "
+            u"магазинов ЮА и без магазина-источника.")
+BASH_HELP = (u"Заморозка Бащинского (ШК из ВХОД_ВЫВОЗ\\ДОВЫВОЗ\\заморозка_бащинский.txt) едет одной партией на ОДНУ точку с его "
+             u"холодильником, без порога суммы и не на склад. Холодильники есть не во всех магазинах: «Найти по продажам» берёт "
+             u"точки, где за 60 дней продано не меньше 5 позиций этой заморозки не меньше чем в 6 неделях (BigQuery), лучшая - первая. "
+             u"Можно выбрать точку из списка. Выбор запоминается. Остальной товар распределяется как обычно.")
+RCS_HELP = (u"Весь товар едет на магазины, включая тот, что обычно идёт через РЦ: он делится по точкам по спросу, файл на %s не "
+            u"создаётся. Нужно, когда склад не принимает (например, магазин закрывается и вывоз идёт сразу на точки).")
 HOW = (("top", u"По точкам"), ("auto", u"Подобрать число точек по сумме"), ("one", u"Всё на один магазин"))
 
 
@@ -104,6 +111,36 @@ class SplitPage(Page):
         self.rc_cb = QCheckBox(u"Сделать файл на %s: туда идёт товар РЦ, на точки он не делится" % core.SPLIT_RC_NAME)
         self.rc_cb.setChecked(True)
         c.lay.addWidget(self.rc_cb)
+        self.rcs_cb = QCheckBox(u"Весь товар на магазины, включая товар РЦ (на склад ничего не едет)")
+        self.rcs_cb.setToolTip(RCS_HELP % core.SPLIT_RC_NAME)
+        self.rcs_cb.setAccessibleName(u"Весь товар на магазины, включая товар РЦ")
+        self.rcs_cb.toggled.connect(lambda *_: self.on_rcs())
+        c.lay.addWidget(self.rcs_cb)
+        self.bash_chk = QCheckBox(u"Заморозка Бащинского - одной партией на точку с холодильником")
+        self.bash_chk.setToolTip(BASH_HELP)
+        self.bash_chk.setAccessibleName(u"Заморозка Бащинского одной партией на точку")
+        self.bash_chk.setChecked(self._sget("split_bash") == "1")
+        self.bash_chk.toggled.connect(lambda *_: self.on_bash())
+        c.lay.addWidget(self.bash_chk)
+        brow = QHBoxLayout()
+        brow.setSpacing(T.SPACING_SM)
+        brow.setContentsMargins(T.SPACING_LG + T.SPACING_SM, 0, 0, 0)
+        self.bash_cb = QComboBox()
+        self.bash_cb.setAccessibleName(u"Куда везти заморозку Бащинского")
+        self.bash_cb.setMinimumWidth(14 * T.SPACING_MD)
+        self.bash_cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.bash_cb.currentIndexChanged.connect(lambda *_: self.on_bash())
+        brow.addWidget(self.bash_cb)
+        self.bash_btn = button(u"Найти по продажам", "refresh", tip=u"Точки с холодильником Бащинского - из BigQuery",
+                               on_click=self.load_bash)
+        brow.addWidget(self.bash_btn)
+        brow.addWidget(help_button(BASH_HELP, u"Заморозка Бащинского"))
+        brow.addStretch(1)
+        c.lay.addLayout(brow)
+        self.bash_line = StatusLine()
+        c.lay.addWidget(self.bash_line)
+        self.pinfo = None
+        self._fill_bash()
         self.how.buttonClicked.connect(lambda *_: self.on_how())
         self.body.addWidget(c)
 
@@ -124,8 +161,9 @@ class SplitPage(Page):
         bl.addWidget(self.summary, 1)
         self.go_btn = button(u"Распределить", "call_split", kind="primary", on_click=self.go)
         bl.addWidget(self.go_btn)
-        win.busy_widgets += [self.go_btn]
+        win.busy_widgets += [self.go_btn, self.bash_btn]
         self.on_how()
+        self.on_bash()
 
     # ---------------- шаг 1 ----------------
     def shown(self):
@@ -195,10 +233,15 @@ class SplitPage(Page):
             QMessageBox.information(self, u"Взять без правок", u"Автоматических списков пока нет: сформируйте список в «Списки вывоза».")
             return
         src = self.auto[i]
-        if core.has_manual_note(src) and QMessageBox.question(
-                self, u"Взять без правок", u"Это список РУЧНОГО ВЫБОРА: в нём сигареты и кеги, которые обычно не вывозят.\nЕсли вы "
-                u"ничего не удаляли, они поедут в распределение (кеги - на точки, где они продаются).\n\nВзять список как есть?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        kind = core.manual_note_kind(src)
+        if kind == "all":
+            ask = (u"Это список «ВЫВОЗ ВСЕГО»: в нём весь остаток магазина, в т.ч. то, что обычно остаётся (кеги, сигареты, расходники, "
+                   u"кулинария, матрица и ЮА).\nЕсли вы ничего не удаляли, поедет ВСЁ.\n\nВзять список как есть?")
+        else:
+            ask = (u"Это список РУЧНОГО ВЫБОРА: в нём сигареты и кеги, которые обычно не вывозят.\nЕсли вы "
+                   u"ничего не удаляли, они поедут в распределение (кеги - на точки, где они продаются).\n\nВзять список как есть?")
+        if kind and QMessageBox.question(self, u"Взять без правок", ask, QMessageBox.Yes | QMessageBox.No,
+                                         QMessageBox.No) != QMessageBox.Yes:
             return
         try:
             dst = core.copy_list_as_is(self.d, src)
@@ -214,6 +257,82 @@ class SplitPage(Page):
         b = self.how.checkedButton()
         return b.property("how") if b else "top"
 
+    # ---------------- заморозка Бащинского ----------------
+    def _sget(self, key):
+        try:
+            s = getattr(getattr(self.win, "themes", None), "settings", None)
+            v = s.value(key) if s is not None else None
+            return None if v is None else str(v)
+        except Exception:
+            return None
+
+    def _sset(self, key, val):
+        try:
+            s = getattr(getattr(self.win, "themes", None), "settings", None)
+            if s is not None:
+                s.setValue(key, val)
+        except Exception:
+            pass
+
+    def _fill_bash(self):
+        fr = (self.pinfo or {}).get("bash") or []
+        saved = self._sget("split_bash_point")
+        self.bash_cb.blockSignals(True)
+        self.bash_cb.clear()
+        if self.pinfo is None:
+            self.bash_cb.addItem(u"лучшая по продажам", None)
+        elif not fr:
+            self.bash_cb.addItem(u"не найдены - заморозка поделится по спросу", None)
+        else:
+            for i, (s, q) in enumerate(fr):
+                t = s + (u"  · лучшая по продажам" if i == 0 else u"")
+                if q:
+                    t += u"  · %.0f шт за %d дн." % (q, self.core.DV_BASH_DAYS)
+                self.bash_cb.addItem(t, s)
+            names = [s for s, _q in fr]
+            self.bash_cb.setCurrentIndex(names.index(saved) if saved in names else 0)
+        self.bash_cb.blockSignals(False)
+
+    def load_bash(self):
+        if self.win.worker is not None:
+            return
+        core, src = self.core, (self.chk or {}).get("shop") or u""
+        self.win.run_task(u"Точки с холодильником Бащинского", lambda: core.dovyvoz_points(self.d, [src] if src else []), self._bash_done)
+
+    def _bash_done(self, info, out):
+        self.pinfo = info if isinstance(info, dict) else {"bash": [], "problem": u"нет ответа"}
+        self._fill_bash()
+        self.on_bash()
+
+    def bash_point(self):
+        """Выбранная точка (None - пусть расчёт найдёт лучшую сам) или None, если галочка выключена."""
+        return self.bash_cb.currentData() if self.bash_chk.isChecked() else None
+
+    def on_bash(self):
+        on = self.bash_chk.isChecked()
+        self.bash_cb.setEnabled(on)
+        self.bash_btn.setEnabled(on and self.win.worker is None)
+        v = self.bash_cb.currentData()
+        if v:
+            self._sset("split_bash_point", v)
+        self._sset("split_bash", "1" if on else "0")
+        if not on:
+            self.bash_line.set(u"", "INFO")
+        elif self.pinfo is None:
+            self.bash_line.set(u"Точка не выбрана: расчёт возьмёт лучшую по продажам; «Найти по продажам» - выбрать из списка", "INFO")
+        elif v:
+            self.bash_line.set(u"Вся заморозка Бащинского - на %s" % v, "OK")
+        else:
+            self.bash_line.set(u"Холодильники Бащинского не определены%s: заморозка поделится по спросу - проверьте"
+                               % ((u" (" + self.pinfo["problem"] + u")") if self.pinfo.get("problem") else u""), "WARN")
+        self.update_action()
+
+    def on_rcs(self):
+        on = self.rcs_cb.isChecked()
+        self.rc_cb.setEnabled(not on)
+        self.rc_cb.setToolTip(u"Не действует: товар РЦ тоже едет на магазины" if on else u"")
+        self.update_action()
+
     def on_how(self):
         h = self.how_val()
         self.top_sp.setEnabled(h == "top")
@@ -228,7 +347,7 @@ class SplitPage(Page):
         elif h == "one" and not self.one_cb.currentText():
             self.one_line.set(u"Выберите магазин", "WARN")
         else:
-            self.one_line.set(u"Товар РЦ - на %s" % self.core.SPLIT_RC_NAME, "INFO")
+            self.one_line.set(u"Товар РЦ - тоже на магазин" if self.rcs_cb.isChecked() else u"Товар РЦ - на %s" % self.core.SPLIT_RC_NAME, "INFO")
         why = u""
         if not (self.chk and self.chk.get("ok")):
             why = u"Сначала выберите годный лист в шаге 1"
@@ -239,7 +358,9 @@ class SplitPage(Page):
         else:
             how_t = {"top": u"на %d точек" % self.top_sp.value(), "auto": u"число точек по сумме",
                      "one": u"всё на %s" % self.one_cb.currentText()}[h]
-            self.summary.setText(u"%s · %d поз. · %s" % (self.chk["shop"], self.chk["n"], how_t))
+            self.summary.setText(u"%s · %d поз. · %s%s" % (self.chk["shop"], self.chk["n"], how_t,
+                                                           (u" · РЦ-товар на магазины" if self.rcs_cb.isChecked() else u"")
+                                                           + (u" · заморозка Бащинского одной партией" if self.bash_chk.isChecked() else u"")))
         self.go_btn.setEnabled(not why and self.win.worker is None)
         self.go_btn.setToolTip(why or u"Файлы ТСД и Распределение.xlsx - в «ТСД_по_адресам» рядом со списком")
 
@@ -251,13 +372,14 @@ class SplitPage(Page):
             return
         chk, h = v_["chk"], self.how_val()
         n = core._clamp_top(self.top_sp.value())
-        auto, skip = h == "auto", not self.rc_cb.isChecked()
+        rcs = self.rcs_cb.isChecked()
+        auto, skip = h == "auto", (not self.rc_cb.isChecked()) or rcs
         one = self.one_cb.currentText().strip() if h == "one" else u""
         if h == "one" and not one:
             return
         if one and QMessageBox.question(
-                self, u"Распределение", u"Всё, что обычно делится по точкам (в т.ч. кеги), - на один магазин: %s?\nТовар РЦ - как "
-                u"обычно на %s (лист: %d поз.)." % (one, core.SPLIT_RC_NAME, chk["n"])) != QMessageBox.Yes:
+                self, u"Распределение", u"Всё, что обычно делится по точкам (в т.ч. кеги), - на один магазин: %s?\nТовар РЦ - %s "
+                u"(лист: %d поз.)." % (one, u"тоже на этот магазин" if rcs else u"как обычно на " + core.SPLIT_RC_NAME, chk["n"])) != QMessageBox.Yes:
             return
         label = (u"Весь вывоз на %s" % one) if one else (u"Распределение (число точек по сумме)" if auto else u"Распределение на %d точек" % n)
 
@@ -268,14 +390,18 @@ class SplitPage(Page):
             self.win.journal(label, core._split_text(self.info))
             if self.info.get("ok"):
                 tot = sum(float(r[3] or 0) for r in self.info.get("summary", []))
+                warns = list(dict.fromkeys(self.info.get("dv_warn") or []))
                 self.res.show_result(rows, u"Готово: файлов ТСД %d на %s грн. Файлы - в «ТСД_по_адресам» рядом со списком."
-                                     % (len(self.info.get("files", [])), core.fmt_money(tot)), "OK")
+                                     % (len(self.info.get("files", [])), core.fmt_money(tot))
+                                     + ((u" ВНИМАНИЕ: " + u"; ".join(warns)) if warns else u""), "WARN" if warns else "OK")
             else:
                 self.res.show_result(rows, u"Есть ошибки - подробности в «Журнале».", "ERR")
                 self.win.status(u"Распределение: есть ошибки", "ERR")
             from PySide6.QtCore import QTimer
             QTimer.singleShot(50, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
-        self.win.run_task(label, lambda: core.run_split(self.d, fp, top_n=n, skip_rc=skip, auto_points=auto, target=one or None), done)
+        self.win.run_task(label, lambda: core.run_split(self.d, fp, top_n=n, skip_rc=skip, auto_points=auto, target=one or None,
+                                                rc_to_shops=rcs, bash_freeze=self.bash_chk.isChecked(),
+                                                bash_point=self.bash_point()), done)
 
     def open_info(self, key):
         v = (self.info or {}).get(key)

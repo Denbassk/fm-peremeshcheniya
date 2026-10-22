@@ -21,12 +21,11 @@ STORE_HELP = (u"По умолчанию выбран магазин с само�
 MODE_SHORT = {                  # одна строка на экране; полное описание режима - под «?» (mode_description ядра)
     "normal": u"Автоматические исключения: сигареты, кеги, кулинария, расходники, поставщики и ШК из настроек.",
     "manual": u"Сигареты и кеги тоже попадут в список - лишнее удалите в Excel.",
-    "sweep": u"Вывозится всё, кроме заморозки, скоропортов и расходников.",
 }
 MODE_HELP = (u"Обычный - автоматические исключения (сигареты, кеги, расходники, кулинария, список ШК, поставщики). "
              u"Ручной выбор - сигареты и кеги тоже попадают в список с причиной в последней колонке, лишнее удаляете в Excel. "
-             u"Зачистка остатка - вывозится всё, кроме заморозки, скоропортов и расходников. Списки поставщиков и ШК "
-             u"«не вывозить» хранятся в папке Справочник и действуют на все следующие расчёты.")
+             u"Галочка «Вывезти ВСЁ» отменяет все правила: остаётся только то, что стоит на приходах или остатке этого магазина "
+             u"на ЮА. Списки поставщиков и ШК «не вывозить» хранятся в папке Справочник и действуют на все следующие расчёты.")
 
 
 class VyvozPage(Page):
@@ -83,6 +82,8 @@ class VyvozPage(Page):
         row.setSpacing(T.SPACING_LG)
         self.mode_group = QButtonGroup(self)
         for val, text in core.VYVOZ_MODES:
+            if val == "sweep":                               # зачистка в окне больше не нужна: её заменила галочка «Вывезти ВСЁ»
+                continue
             rb = QRadioButton(text)
             rb.setProperty("mode", val)
             rb.setChecked(val == "manual")                   # как в прежнем окне: по умолчанию ручной выбор
@@ -95,6 +96,10 @@ class VyvozPage(Page):
         self.rm_cb = QCheckBox(u"Вывозить и товар из матрицы, который на ЮА ещё не завозился")
         self.rm_cb.setChecked(True)
         c.lay.addWidget(self.rm_cb)
+        self.all_cb = QCheckBox(u"Вывезти ВСЁ, кроме того, что уже стоит у этого магазина на ЮА")
+        self.all_cb.setToolTip(core.TAKE_ALL_TEXT)
+        self.all_cb.setAccessibleName(u"Вывезти всё, отменив все правила")
+        c.lay.addWidget(self.all_cb)
         # свёрнутый блок «Настройки вывоза»: списки «не вывозить» меняют редко
         self.opts_btn = button(u"Настройки вывоза", "expand_more", kind="ghost")
         self.opts_btn.setCheckable(True)
@@ -118,6 +123,7 @@ class VyvozPage(Page):
         self.body.addWidget(c)
         self.mode_group.buttonClicked.connect(lambda *_: self.mode_refresh())
         self.rm_cb.toggled.connect(lambda *_: self.mode_refresh())
+        self.all_cb.toggled.connect(lambda *_: self.mode_refresh())
 
         # ---------- результат: появляется после расчёта ----------
         self.res_card = Card(u"Результат")
@@ -289,11 +295,18 @@ class VyvozPage(Page):
     def mode_refresh(self):
         n, when, _p = self.core.suppliers_file_info(self.d)
         m = self.mode()
-        self.rm_cb.setEnabled(m != "sweep")
-        self.rm_cb.setToolTip(u"В зачистке не действует: вывозится всё" if m == "sweep" else u"")
+        allout = self.all_cb.isChecked()
+        for b in self.mode_group.buttons():
+            b.setEnabled(not allout)
+        self.rm_cb.setEnabled(not allout)
+        self.rm_cb.setToolTip(u"Не действует: вывозится всё" if allout else u"")
         t, lv = self.core.mode_description(m, n, self.rm_cb.isChecked())
         note = self.core.suppliers_note(m, n, when)
-        self.mode_line.set(MODE_SHORT.get(m, u""), "WARN" if lv == "WARN" else "INFO")
+        if allout:
+            t, lv, note = self.core.TAKE_ALL_TEXT, "WARN", u"При «Вывезти ВСЁ» список поставщиков и ШК «не вывозить» не действуют."
+            self.mode_line.set(self.core.TAKE_ALL_SHORT, "WARN")
+        else:
+            self.mode_line.set(MODE_SHORT.get(m, u""), "WARN" if lv == "WARN" else "INFO")
         self.mode_line.set_help(u"%s\n\n%s" % (t, note))
         self.b_sup.setToolTip(note)
         self.update_action()
@@ -311,7 +324,7 @@ class VyvozPage(Page):
     # ---------------- действие ----------------
     def update_action(self):
         sel = self.selected()
-        mode_t = dict(self.core.VYVOZ_MODES).get(self.mode(), u"")
+        mode_t = u"ВЫВЕЗТИ ВСЁ" if self.all_cb.isChecked() else dict(self.core.VYVOZ_MODES).get(self.mode(), u"")
         if not sel:
             self.summary.setText(u"Выберите магазин в шаге 2")
             self.go_btn.setEnabled(False)
@@ -334,6 +347,13 @@ class VyvozPage(Page):
             return
         fl = self.core.vyvoz_mode_flags(self.mode())
         rm = self.rm_cb.isChecked()
+        take_all = self.all_cb.isChecked()
+        if take_all and QMessageBox.question(
+                self, u"Вывезти ВСЁ", u"Включено «Вывезти ВСЁ»: уедет весь остаток (%s), кроме того, что стоит на приходах или остатке этого магазина на ЮА. "
+                u"В список попадёт и то, что обычно остаётся: матрица и ЮА вообще, сигареты, кеги, расходники, кулинария, "
+                u"овощи, поставщики с галочкой.\n\nЧто оставить на месте - удалите строки в Excel. Сформировать?" % u"; ".join(shops), QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
         core, d = self.core, self.d
 
         def done(info, out):
@@ -355,6 +375,19 @@ class VyvozPage(Page):
             if ne:
                 self.banner.show_msg(u"Списков готово: %d из %d. Ошибок: %d - подробности в «Журнале»." % (okn, len(rows), ne), "ERR",
                                      u"Открыть журнал")
+            elif self.info.get("take_all"):
+                ok_sh = [sh for sh in self.info.get("shops", []) if sh.get("status") == "OK"]
+                st_pos = sum(int(sh.get("stock_pos") or 0) for sh in ok_sh)
+                st_sum = sum(float(sh.get("stock_sum") or 0) for sh in ok_sh)
+                bad = sum(int(sh.get("bad_pos") or 0) for sh in ok_sh)
+                stay = sum(int(sh.get("stay_pos") or 0) for sh in ok_sh)
+                txt = (u"Уедет %d поз. на %s грн из %d на остатке (%s грн); остаётся на месте %d поз. (стоят на приходах магазина на ЮА)."
+                       % (pos, core.fmt_money(sm), st_pos, core.fmt_money(st_sum), stay))
+                if bad:
+                    self.banner.show_msg(txt + u" НЕ загрузить в ТСД (ШК не 6-14 цифр): %d поз. - вывозить вручную, список в «Журнале»." % bad,
+                                         "WARN", u"Журнал")
+                else:
+                    self.banner.show_msg(txt + u" Лишнее удалите в Excel.", "OK", u"Журнал")
             else:
                 self.banner.show_msg(u"Готово списков: %d · вывезти %d поз. на %s грн." % (okn, pos, core.fmt_money(sm)), "OK", u"Журнал")
             self.has_list = bool(self.first_list())
@@ -368,7 +401,8 @@ class VyvozPage(Page):
             from PySide6.QtCore import QTimer
             QTimer.singleShot(50, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
         self.win.run_task(u"Формирование списков вывоза",
-                          lambda: core.run_vyvoz(d, shops=shops, remove_not_on_ua=rm, sweep=fl["sweep"], manual=fl["manual"]), done)
+                          lambda: core.run_vyvoz(d, shops=shops, remove_not_on_ua=rm, manual=fl["manual"],
+                                                 take_all=take_all), done)
 
     def first_list(self):
         return next((x["list"] for x in (self.info or {}).get("shops", []) if x.get("list") and os.path.isfile(x["list"])), None)
