@@ -381,8 +381,11 @@ class VyvozPage(Page):
                 st_sum = sum(float(sh.get("stock_sum") or 0) for sh in ok_sh)
                 bad = sum(int(sh.get("bad_pos") or 0) for sh in ok_sh)
                 stay = sum(int(sh.get("stay_pos") or 0) for sh in ok_sh)
-                txt = (u"Уедет %d поз. на %s грн из %d на остатке (%s грн); остаётся на месте %d поз. (стоят на приходах магазина на ЮА)."
+                chk = u" ".join(sh.get("all_check_text") or u"" for sh in ok_sh).strip()       # надпись после проверки
+                txt = (u"Уедет %d поз. на %s грн из %d на остатке (%s грн); остаётся на месте %d поз. (стоят у магазина на ЮА)."
                        % (pos, core.fmt_money(sm), st_pos, core.fmt_money(st_sum), stay))
+                if chk:
+                    txt = chk + u" " + txt
                 if bad:
                     self.banner.show_msg(txt + u" НЕ загрузить в ТСД (ШК не 6-14 цифр): %d поз. - вывозить вручную, список в «Журнале»." % bad,
                                          "WARN", u"Журнал")

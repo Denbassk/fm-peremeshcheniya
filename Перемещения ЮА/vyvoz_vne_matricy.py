@@ -1808,6 +1808,62 @@ def verify_vyvoz(shop_dir, fname, rows):
     return problems
 
 
+def verify_take_all(shop_dir, fname, src_df):
+    """«Вывезти ВСЁ»: независимая сверка готовых файлов с ИСХОДНОЙ выгрузкой магазина (не с расчётом программы). Каждый ШК с остатком
+    > 0 должен быть ровно в одном месте с тем же количеством: лист «Вывезти на склад», «Остаётся - инвентаризация ЮА» (стоит у
+    магазина на ЮА) или «Нет в матрице, но есть на ЮА» (ШК не загрузить в ТСД). -> (ok, надпись, проблемы)."""
+    def aggr_src():
+        d_ = src_df[src_df["qty"] > 0] if len(src_df) else src_df
+        return {k_: round(float(q_), 3) for k_, q_ in d_.groupby("key")["qty"].sum().items() if round(float(q_), 3) > 0}
+
+    def read_sheet(ws, row0, c_bc, c_q):
+        out_, r_ = {}, row0
+        while ws.cell(row=r_, column=c_bc).value not in (None, ""):
+            q_ = ws.cell(row=r_, column=c_q).value
+            k_ = bc_key(rz.fmt_barcode(ws.cell(row=r_, column=c_bc).value))
+            out_[k_] = round(float(q_), 3) if isinstance(q_, (int, float)) else None
+            r_ += 1
+        return out_
+    problems = []
+    src = aggr_src()
+    wb = load_workbook(os.path.join(shop_dir, fname + ".xlsx"), data_only=True)
+    try:
+        vy = read_sheet(wb[SHEET_VYVOZ], 5, 2, 4)
+        stay = read_sheet(wb[SHEET_INV], 2, 1, 3)
+        bad = read_sheet(wb[SHEET_C1], 2, 1, 3)
+    finally:
+        wb.close()
+    seen = {}
+    for part, d_ in ((u"вывезти", vy), (u"остаётся на ЮА", stay), (u"не загрузить в ТСД", bad)):
+        for k_, q_ in d_.items():
+            if k_ in seen:
+                problems.append(u"ШК %s сразу в двух местах: %s и %s" % (k_, seen[k_][0], part))
+            seen[k_] = (part, q_)
+    miss = [k_ for k_ in src if k_ not in seen]
+    extra = [k_ for k_ in seen if k_ not in src]
+    wrong = [k_ for k_ in src if k_ in seen and (seen[k_][1] is None or abs(seen[k_][1] - src[k_]) > 1e-6)]
+    if miss:
+        problems.append(u"из выгрузки нет ни в списке, ни среди остающихся: %d ШК (%s)" % (len(miss), u", ".join(miss[:6])))
+    if extra:
+        problems.append(u"в готовых листах есть ШК, которых нет в выгрузке: %d (%s)" % (len(extra), u", ".join(extra[:6])))
+    if wrong:
+        problems.append(u"количество не совпало с выгрузкой: %d ШК (%s)" % (
+            len(wrong), u"; ".join(u"%s: выгрузка %s / лист %s" % (k_, src[k_], seen[k_][1]) for k_ in wrong[:4])))
+    n, nv, ns, nb = len(src), len(vy), len(stay), len(bad)
+    if problems:
+        return False, (u"ПРОВЕРКА НЕ ПРОЙДЕНА: готовые файлы не совпадают с выгрузкой магазина. " + u"; ".join(problems)), problems
+    if ns or nb:
+        head = u"ПРОВЕРКА ПРОЙДЕНА: ВЕСЬ ОСТАТОК, КРОМЕ %d ПОЗ., БУДЕТ ВЫВЕЗЕН." % (ns + nb)
+    else:
+        head = u"ПРОВЕРКА ПРОЙДЕНА: ВЕСЬ ОСТАТОК БУДЕТ ВЫВЕЗЕН."
+    tail = u" Выгрузка магазина: %d поз. = вывезти %d" % (n, nv)
+    if ns:
+        tail += u" + остаётся на месте %d (стоят у этого магазина на ЮА)" % ns
+    if nb:
+        tail += u" + ШК не загрузить в ТСД, вывозить вручную %d" % nb
+    return True, head + tail + u". Каждый ШК и количество сверены с листом и txt: расхождений нет.", []
+
+
 def _file_busy(path):
     """Файл открыт в Excel (есть ~$-копия или файл не открывается на запись)."""
     if os.path.isfile(os.path.join(os.path.dirname(path), u"~$" + os.path.basename(path))):
@@ -2111,6 +2167,13 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
                                "is_weight": [(str(u).lower() in (u"кг", u"kg")) for u in ivg["unit"]]})
             rz.write_shop_txt(os.path.join(shop_dir, nm + INV_TXT_SUFFIX), ir)
         probs = verify_vyvoz(shop_dir, nm, v) + verify_inventory(shop_dir, nm, iv, iv_ok)
+        if take_all:                                       # надпись после проверки: сверка готовых файлов с исходной выгрузкой магазина
+            ok_all, txt_all, pr_all = verify_take_all(shop_dir, nm, df)
+            entry["all_check_ok"], entry["all_check_text"] = ok_all, txt_all
+            if ok_all:
+                R.check("OK", u"%s: ПРОВЕРКА «ВЕСЬ ОСТАТОК ВЫВЕЗЕН»" % shop, txt_all)
+            else:
+                probs = list(probs) + pr_all
         if probs:
             entry["status"] = u"ОШИБ: сверка файлов: " + "; ".join(probs)
             R.check("ERROR", u"%s: обратная сверка" % shop, "; ".join(probs))
@@ -2141,6 +2204,7 @@ def run_vyvoz(dirs, shops=None, ref=None, use_ua=True, day=None, remove_not_on_u
                       "excl": e["stats"]["counts"]["EXCL"], "inv_pos": e["stats"]["inv_pos"], "inv_sum": e["stats"]["inv_sum"],
                       "wait_pos": e["stats"]["wait_pos"], "kul_pos": e["stats"]["kul_pos"], "folder": e["folder"],
                       "stock_pos": e["stats"]["positions"], "stock_sum": e["stats"]["cost_sum"], "bad_pos": e.get("bad_pos", 0), "stay_pos": e.get("stay_pos", 0),
+                      "all_check_ok": e.get("all_check_ok"), "all_check_text": e.get("all_check_text", u""),
                       "list": e.get("list", u"")} for e in entries]
     cand = all_res[(all_res["verdict"] == "VYVOZ") | all_res["reason"].str.startswith(u"поставщик исключён")]
     info["suppliers"] = [{"supplier": sp, "pos": len(g), "sum": round(float(g["sum"].sum()), 2)}
@@ -2969,6 +3033,23 @@ def _self_test_body(gui=False):
         ck(str(ws_ta["A3"].value or u"").startswith(u"ВЫВОЗ ВСЕГО") and ws_ta.cell(row=4, column=10).value == ALL_HEAD,
            "вывезти всё: в листе пометка A3 и колонка «по обычным правилам»")
         ck(u"ВЫВОЗ ВСЕГО" in _result_text(out_ta), "вывезти всё: итог показывает режим")
+        ck(all(x_.get("all_check_ok") and x_.get("all_check_text", u"").startswith(u"ПРОВЕРКА ПРОЙДЕНА") for x_ in out_ta["shops"]),
+           "вывезти всё: надпись после проверки: %s" % [x_.get("all_check_text") for x_ in out_ta["shops"]])
+        ck(u"ВЕСЬ ОСТАТОК, КРОМЕ 1" in ta_shops["Тест 1"]["all_check_text"] or u"ВЕСЬ ОСТАТОК, КРОМЕ 2" in ta_shops["Тест 1"]["all_check_text"],
+           "вывезти всё: в надписи видно, сколько позиций остаётся на ЮА: %s" % ta_shops["Тест 1"]["all_check_text"][:120])
+        ck(ta_shops["Тест 2"]["all_check_text"].startswith(u"ПРОВЕРКА ПРОЙДЕНА: ВЕСЬ ОСТАТОК БУДЕТ ВЫВЕЗЕН."),
+           "вывезти всё: без остающихся надпись «весь остаток будет вывезен»: %s" % ta_shops["Тест 2"]["all_check_text"][:90])
+        # проверка ловит расхождения: лишняя позиция в выгрузке, которой нет в готовых файлах, и другое количество
+        sd_ = stores_ta["Тест 1"][1]
+        extra_ = sd_.iloc[[0]].copy()
+        extra_["key"], extra_["bc"], extra_["qty"] = bc_key(_ean("482000099900")), _ean("482000099900"), 3.0
+        ok1_, t1_, p1_ = verify_take_all(os.path.join(out_ta["day_dir"], "Тест 1"), "Тест 1", pd.concat([sd_, extra_], ignore_index=True))
+        ck(not ok1_ and any(u"нет ни в списке" in x_ for x_ in p1_) and t1_.startswith(u"ПРОВЕРКА НЕ ПРОЙДЕНА"),
+           "проверка «весь остаток»: лишняя позиция в выгрузке ловится: %s" % p1_[:2])
+        chg_ = sd_.copy()
+        chg_.loc[chg_.index[0], "qty"] = float(chg_["qty"].iloc[0]) + 5.0
+        ok2_, t2_, p2_ = verify_take_all(os.path.join(out_ta["day_dir"], "Тест 1"), "Тест 1", chg_)
+        ck(not ok2_ and any(u"количество" in x_ for x_ in p2_), "проверка «весь остаток»: другое количество ловится: %s" % p2_[:2])
         if gui:                                             # окно: все страницы собираются (только при явном --selftest)
             try:
                 import tkinter as tk_ui
@@ -4178,6 +4259,8 @@ def _result_text(info):
         lines.append(u"%-26s вывезти %4d поз., %9s ед., %12s грн   проверить 1: %d, проверить 2: %d, исключено %d   %s"
                      % (s["shop"], s["vyvoz_pos"], s["vyvoz_units"], u"{:,.0f}".format(s["vyvoz_sum"]).replace(",", " "),
                         s["check1"], s["check2"], s["excl"], s["status"]))
+        if s.get("all_check_text"):
+            lines.append(u"   %s: %s" % (s["shop"], s["all_check_text"]))
     lines.append(u"")
     lines.append(u"Ошибок %d, предупреждений %d" % (len(R.errors), len(R.warns)))
     for st, nm, det in R.checks:
