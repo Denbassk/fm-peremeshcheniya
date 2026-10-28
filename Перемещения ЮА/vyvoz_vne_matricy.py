@@ -3138,6 +3138,8 @@ def _self_test_body(gui=False):
     _selftest_map(ck)
     _selftest_ua_base(ck)
     _selftest_inv_check(ck)
+    _selftest_missed_ua(ck)
+    _selftest_waybill(ck)
 
     reset_report()
     if fails:
@@ -3336,6 +3338,124 @@ def _selftest_inv_check(ck):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _selftest_missed_ua(ck):
+    """Пропуски ЮА: товар есть на складе ЮА / других точках ЮА, а переводимому магазину на ЮА не поставлен.
+    Магазин товар у Фемели держит (строка в выгрузке, даже с нулём; по ШК, склейке или названию): на складе ЮА остаток > 0 -
+    «Довезти со склада», иначе (только на точках) - «Нет на складе». Фемели не держит, на складе > 0 - «Возможно».
+    Нет остатка нигде - не в списке; точки с нулём в «Где есть» не пишутся."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_miss_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        A, B, C, CF, Dd, E, EF, F, P, G = (_ean("48200800000%d" % i) for i in range(10))
+        H = _ean("482008000010")
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"], ws["A2"] = u"Состояние склада по всем центрам учета", u"Состояние склада"
+        ws.append([u"№", u"Название товара", u"Штрих-код", u"Цена розничная", u"Количество", u"Ед. изм.", u"Себестоимость", u"Склад"])
+        for i, (b, n, q, s) in enumerate(((A, u"Тов А", 5, u"Полевая-Склад ЮА"), (B, u"Тов Б", 0, u"Полевая-Склад ЮА"),
+                                          (C, u"Тов В ЮА", 3, u"Тест 2 ЮА"), (Dd, u"Тов Г", 1, u"Тест 2 ЮА"),
+                                          (Dd, u"Тов Г", 2, u"Тест 1 ЮА"), (P, u"Тов Произв", 4, u"Производство ЮА"),
+                                          (A, u"Тов А", 2, u"Тест 2 ЮА"), (A, u"Тов А", 0, u"Тест 3 ЮА"),
+                                          (E, u"Тов Е", 2, u"Полевая-Склад ЮА"), (H, u"Тов З", 4, u"Полевая-Склад ЮА")), 1):
+            ws.append([i, n, b, 1.0, q, u"шт", 10.0, s])
+        wb.save(os.path.join(d.ua_base, u"База ЮА 27.10.2026.xlsx"))
+        _write_receipts_xlsx(os.path.join(d.ua_receipts, u"ПРИХОДЫ_ТОВАРА 27.10.2026.xlsx"),
+                             [(A, u"Тов А", u"Поставщик А", 5), (E, u"Тов Е", u"Поставщик Е", 2, u"Тест 2 ЮА"),
+                              (F, u"Тов Ф", u"Поставщик Ф", 1, u"Тест 1 ЮА")])
+        _write_state_xlsx(os.path.join(d.stores, u"Состояние склада Тест 1 27.10.2026.xlsx"), u"Тест 1",
+                          [(A, u"Тов А", 3, u"шт", 10.0), (CF, u"Тов В", 0, u"шт", 9.0), (EF, u"Тов Е", 1, u"шт", 7.0),
+                           (G, u"Тов Ж", 2, u"шт", 1.0)])
+        rec = pd.DataFrame({"old_barcode": [C], "new_barcode": [CF]})
+        reset_report()
+        info = run_missed_ua(d, u"Тест 1", recode_df=rec)
+        ck(info["ok"], "пропуски ЮА: %s" % info["problems"])
+        st = {r["key"]: r["st"] for r in info.get("rows", [])}
+        ck(st == {bc_key(A): MISS_WH, bc_key(C): MISS_NOWH, bc_key(E): MISS_WH, bc_key(H): MISS_MAYBE},
+           "пропуски ЮА: что пропущено (Г и Ф у магазина есть, производство не считаем, Б без остатка нигде): %s" % st)
+        fr = {r["key"]: r for r in info.get("rows", [])}
+        ck(fr.get(bc_key(A), {}).get("fam_q") == 3.0 and fr.get(bc_key(A), {}).get("sup") == u"Поставщик А"
+           and fr.get(bc_key(A), {}).get("wh_q") == 5.0 and fr.get(bc_key(A), {}).get("where") == u"Тест 2 ЮА: 2",
+           "пропуски ЮА: остаток Фемели, поставщик, склад ЮА, где ещё (без нулей): %s" % fr.get(bc_key(A)))
+        ck(fr.get(bc_key(C), {}).get("fam_bc") == CF and fr.get(bc_key(E), {}).get("fam_bc") == EF,
+           "пропуски ЮА: ШК Фемели по склейке и по названию: %s / %s" % (fr.get(bc_key(C)), fr.get(bc_key(E))))
+        ck(info.get("stats", {}).get("wh_stock") == 3,
+           "пропуски ЮА: склад ЮА в наличии считается по остатку > 0: %s" % info.get("stats"))
+        ck(info.get("xlsx") and load_workbook(info["xlsx"]).sheetnames == [SHEET_MISS_WH, SHEET_MISS_NOWH, SHEET_MISS_MAYBE,
+                                                                           SHEET_MISS_SUM],
+           "пропуски ЮА: xlsx и листы: %s" % info.get("xlsx"))
+        ck(not run_missed_ua(d, u"Нет такого", recode_df=rec)["ok"], "пропуски ЮА: магазина нет среди выгрузок Family -> ошибка")
+        pa = _parse_args(["--missed-ua", u"Тест 1"])
+        ck(pa.get("missed_ua") == u"Тест 1", "аргументы пропусков ЮА: %s" % pa.get("missed_ua"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _write_waybill_xlsx(path, sender, receiver, rows, total=True):
+    """Синтетическая «Накладная внутреннего перемещения» Торгсофта: шапка, ШК и числа текстом (как в .xls), «Итого:»."""
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = u"Накладная внутреннего перемещения №85 от"
+    ws["A2"], ws["E2"] = u"Поставщик:", sender
+    ws["A3"], ws["E3"] = u"Получатель:", receiver
+    for col, h in zip("AHJKMO", (u"Название товара", u"Штрих код", u"Кол-во", u"Цена закуп.", u"Цена роз.", u"Сумма розн.")):
+        ws[col + "5"] = h
+    r, tq, ts = 6, 0.0, 0.0
+    for i, (bc, name, qty, price) in enumerate(rows):
+        if i == 2:                                   # на новой печатной странице Торгсофт повторяет заголовок
+            for col, h in zip("AHJKMO", (u"Название товара", u"Штрих код", u"Кол-во", u"Цена закуп.", u"Цена роз.", u"Сумма розн.")):
+                ws["%s%d" % (col, r)] = h
+            r += 1
+        for col, v in zip("AHJKMO", (name, bc, qty, u"1,00", price, u"")):
+            ws["%s%d" % (col, r)] = v
+        q, p = float(qty.replace(",", ".")), float(price.replace(",", ".").replace(u"\xa0", u""))
+        ws["O%d" % r] = (u"%.2f" % (q * p)).replace(".", ",")
+        tq, ts, r = tq + q, ts + round(q * p, 2), r + 1
+    if total:
+        ws["A%d" % r], ws["J%d" % r], ws["O%d" % r] = u"Итого:", (u"%g" % tq).replace(".", ","), (u"%.2f" % ts).replace(".", ",")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    wb.save(path)
+
+
+def _selftest_waybill(ck):
+    """Сверка накладной: чтение (ШК текстом, дробь с запятой, «Итого:»), новый ТСД из оставленных строк с фактическим
+    количеством, протокол «едет / убрано / изменено»."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_wb_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        A, B, C, Dd = _ean("482009000001"), "20112652692", _ean("482009000003"), _ean("482009000004")
+        p = os.path.join(tmp, u"накладная.xlsx")
+        _write_waybill_xlsx(p, u"Тест 1", u"Тест 2", [(A, u"Тов А", u"3", u"29,50"), (B, u"Тов Б вес", u"0,305", u"1\xa0011,00"),
+                                                    (C, u"Тов В", u"16", u"32,60"), (Dd, u"Тов Г", u"2", u"10,00")])
+        wbi = read_waybill(p)
+        ck(wbi["ok"] and wbi["sender"] == u"Тест 1" and wbi["receiver"] == u"Тест 2" and len(wbi["rows"]) == 4,
+           "накладная: шапка и строки: %s %s" % (wbi.get("problems"), wbi.get("sender")))
+        ck([r["bc"] for r in wbi["rows"]] == [A, B, C, Dd] and wbi["rows"][1]["qty"] == 0.305 and wbi["rows"][1]["price"] == 1011.0,
+           "накладная: ШК без потери нулей, дробь и пробел в числе: %s" % wbi["rows"][1:2])
+        p2 = os.path.join(tmp, u"накладная2.xlsx")
+        _write_waybill_xlsx(p2, u"Тест 1", u"Тест 2", [(A, u"Тов А", u"3", u"29,50")])
+        wb_ = load_workbook(p2)
+        wb_.active["J7"] = u"5"                      # «Итого» не сходится со строками
+        wb_.save(p2)
+        ck(not read_waybill(p2)["ok"], "накладная: «Итого» не сошлось со строками -> ошибка")
+        # оставить А (3 из 3), Б весовой 0,2 вместо 0,305, убрать В, Г - количество 0 = убрать
+        out = write_waybill_tsd(d, wbi, [(True, 3), (True, 0.2), (False, 16), (True, 0)])
+        ck(out["ok"], "новый ТСД: %s" % out.get("problems"))
+        txt = open(out["txt"], "rb").read().decode("cp1251") if out.get("txt") else u""
+        ck(txt == u"%s;3\r\n%s;0.2\r\n" % (A, B), "новый ТСД: оставленные строки, факт, cp1251 и \\r\\n: %r" % txt)
+        ck(os.path.basename(out.get("txt", u"")) == u"Тест 2.txt" and os.path.basename(os.path.dirname(os.path.dirname(out["txt"]))) == u"Тест 1",
+           "новый ТСД: ВЫВОЗ\\<день>\\<отправитель>\\Сверка_накладной_*\\<получатель>.txt: %s" % out.get("txt"))
+        ck(out["stats"]["keep"] == 2 and out["stats"]["removed"] == 2 and out["stats"]["changed"] == 1,
+           "новый ТСД: счёт едет / убрано / изменено: %s" % out["stats"])
+        ck(out.get("xlsx") and load_workbook(out["xlsx"]).sheetnames == [SHEET_WB_SUM, SHEET_WB_KEEP, SHEET_WB_DEL, SHEET_WB_CHG],
+           "новый ТСД: протокол xlsx: %s" % out.get("xlsx"))
+        ck(not write_waybill_tsd(d, wbi, [(False, 0)] * 4)["ok"], "новый ТСД: ничего не оставлено -> ошибка, файл не пишется")
+        ck(not write_waybill_tsd(d, wbi, [(True, 1)])["ok"], "новый ТСД: решений меньше, чем строк -> ошибка")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _selftest_sweep(ck):
     """Зачистка остатка: что вывозится, что остаётся; число точек по сумме на точку."""
     ck(auto_top_n(29000) == 5 and auto_top_n(12000) == 2 and auto_top_n(3000) == 1 and auto_top_n(100000) == SPLIT_TOP_N
@@ -3458,7 +3578,21 @@ def _selftest_qt_window(ck, d):
         res_ = qt_app.run(sys.modules[__name__], dirs=d, test_mode=True,
                           settings=QSettings(os.path.join(d.base, "ui_test.ini"), QSettings.IniFormat))
         keys = res_["keys"]
-        ck(set(keys) == {"vyvoz", "split", "fin", "serv", "log"}, "окно PySide6: экраны %s" % (keys,))
+        ck(set(keys) == {"vyvoz", "split", "nakl", "fin", "serv", "log"}, "окно PySide6: экраны %s" % (keys,))
+        from PySide6.QtCore import Qt as QtC
+        from vyvoz_gui.page_nakl import WaybillModel          # сверка накладной: галочка «едет» и факт
+        m_ = WaybillModel()
+        m_.set_rows([{"bc": "4820000000011", "name": u"А", "qty": 3.0, "price": 10.0, "sum": 30.0, "bad": False},
+                     {"bc": "4820000000028", "name": u"Б", "qty": 0.305, "price": 100.0, "sum": 30.5, "bad": False},
+                     {"bc": "4820000000035", "name": u"В", "qty": 2.0, "price": 5.0, "sum": 10.0, "bad": False}])
+        c_go, c_f = m_.COL_GO, m_.COL_FACT
+        m_.setData(m_.index(1, c_f), u"0,2")                  # запятая как в Торгсофте
+        m_.setData(m_.index(2, c_go), QtC.Unchecked, QtC.CheckStateRole)
+        m_.setData(m_.index(0, c_f), u"0")                    # 0 = убрать
+        ck(m_.decisions() == [(False, 0.0), (True, 0.2), (False, 2.0)] and m_.counts()["keep"] == 1 and m_.counts()["changed"] == 1,
+           "окно: модель накладной - факт, галочка, ноль снимает галочку: %s %s" % (m_.decisions(), m_.counts()))
+        m_.set_all(True)
+        ck(m_.decisions() == [(True, 3.0), (True, 0.2), (True, 2.0)], "окно: «Отметить все» (факт 0 -> как в накладной): %s" % m_.decisions())
         ck(res_["targets"] == res_["targets_want"] and res_["targets"],
            "окно PySide6: «Всё на один магазин» = split_targets: %s" % (res_["targets"][:3],))
         ck(u"хинтинг полный" in res_["font"], "окно PySide6: %s" % res_["font"])
@@ -3530,6 +3664,18 @@ def _selftest_gui_logic(ck):
         shutil.copyfile(corr, alien)
         v3 = validate_split_input(d, alien)
         ck(not v3["ok"] and v3["level"] == "warn" and CORR_DIR in v3["text"], "validate_split_input: лист не из Корректировка_ЮА: %s" % v3)
+        # L6б: лист в Корректировка_ЮА старше свежего списка вывоза этого магазина - не распределять (28.10: Ньютона 102 ушёл
+        # старым листом на 335 поз. вместо 209)
+        auto_ = os.path.join(d.out, u"2026-10-08", rz.safe_name(u"Байрона 138/1"), rz.safe_name(u"Байрона 138/1") + u".xlsx")
+        _write_vyvoz_list_xlsx(auto_, u"Байрона 138/1", u"08.10.2026", [(_ean("482100600011"), u"Товар", 2, u"шт", 5.0, u"Пост")])
+        t0 = time.time()
+        os.utime(corr, (t0 - 3600, t0 - 3600))
+        os.utime(auto_, (t0 - 60, t0 - 60))
+        v4 = validate_split_input(d, corr)
+        ck(not v4["ok"] and v4["level"] == "warn" and u"устарел" in v4["text"],
+           "validate_split_input: лист старше свежего списка вывоза магазина -> не распределять: %s" % v4)
+        os.utime(corr, (t0, t0))
+        ck(validate_split_input(d, corr)["ok"], "validate_split_input: лист сохранён после списка вывоза -> ok")
         # L7: магазины для «весь вывоз на один магазин»
         ua_ = load_ua_stores(d)
         all_ = set(x for v_ in rz.ROUTES.values() for x in v_)
@@ -3548,7 +3694,7 @@ def _selftest_gui_logic(ck):
         ck(sc_["found"] == {} and isinstance(sc_["inputs"], list) and sc_["inputs"] and isinstance(sc_["errors"], list),
            "scan_inputs: пустая папка -> пусто, строки «Шаг 1» есть")
         # L11: тексты разделов
-        ck(set(UI_PAGES) == {"vyvoz", "split", "upd", "fin", "serv", "log", "dv"} and all(len(v_) == 2 for v_ in UI_PAGES.values()), "UI_PAGES")
+        ck(set(UI_PAGES) == {"vyvoz", "split", "nakl", "upd", "fin", "serv", "log", "dv"} and all(len(v_) == 2 for v_ in UI_PAGES.values()), "UI_PAGES")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -3769,13 +3915,15 @@ def _selftest_rc_to_shops(ck):
         d = Dirs(tmp)
         d.ensure()
         shop = u"Тест Источник"
-        RC1, D1 = _ean("482100500021"), _ean("482100500022")
+        RC1, D1, AL = _ean("482100500021"), _ean("482100500022"), _ean("482100500023")
         corr = os.path.join(tmp, CORR_DIR, u"Тест_рц.xlsx")
         _write_vyvoz_list_xlsx(corr, shop, u"22.10.2026", [(RC1, u"Товар РЦ", 12, u"шт", 5.0, u"Пост"),
-                                                           (D1, u"Прямой товар", 9, u"шт", 7.0, u"Пост")])
+                                                           (D1, u"Прямой товар", 9, u"шт", 7.0, u"Пост"),
+                                                           (AL, u"Горілка Тест 0,5л", 3, u"шт", 90.0, u"УДК")])
         g["fetch_route_history"] = lambda bcs, sh: {bc_key(b): ({"shop_rc": "2026-09-01", "shop_dir": "", "net_rc": "", "net_dir": "", "sup": "Пост"}
                                                                 if bc_key(b) == bc_key(RC1) else
-                                                                {"shop_rc": "", "shop_dir": "2026-09-01", "net_rc": "", "net_dir": "", "sup": "Пост"})
+                                                                {"shop_rc": "", "shop_dir": "2026-09-01", "net_rc": "", "net_dir": "",
+                                                                 "sup": u"УДК" if bc_key(b) == bc_key(AL) else "Пост"})
                                                     for b in bcs}
         g["pick_top_shops"] = lambda ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP: pd.DataFrame(
             {"store": [u"Точка А", u"Точка Б"], "rev": [300.0, 200.0]}).head(n)
@@ -3795,6 +3943,16 @@ def _selftest_rc_to_shops(ck):
            "РЦ-товар на магазины: количество по ШК сошлось: %s" % tot1)
         ck(any(u"РЦ" in str(w_) and u"магазин" in str(w_) for w_ in i1.get("routes", pd.DataFrame({"why": []}))["why"]),
            "РЦ-товар на магазины: причина маршрута в листе")
+        # алкоголь на Полевую (настройка 28.10.2026): поставщики из Справочник\vyvoz_alcohol_suppliers.csv - на склад при любом
+        # режиме, даже «весь товар на магазины» и «всё на один магазин»; остальное как обычно
+        i2 = run_split(d, corr, ref=ref0, top_n=2, rc_to_shops=True, target=u"Точка Б", alc_to_rc=True)
+        a2 = i2.get("alloc", pd.DataFrame(columns=["addr", "bc", "qty"]))
+        ck(i2.get("ok") and list(a2.loc[a2["addr"] == SPLIT_RC_NAME, "bc"]) == [AL]
+           and set(a2.loc[a2["addr"] == u"Точка Б", "bc"]) == {RC1, D1},
+           "алкоголь на Полевую: только алкоголь на склад, остальное на магазин: %s %s" % (a2.to_dict("records"), i2.get("problems")))
+        i3 = run_split(d, corr, ref=ref0, top_n=2, rc_to_shops=True, target=u"Точка Б")
+        a3 = i3.get("alloc", pd.DataFrame(columns=["addr", "bc", "qty"]))
+        ck(i3.get("ok") and SPLIT_RC_NAME not in set(a3["addr"]), "без настройки алкоголь едет вместе со всем: %s" % a3.to_dict("records"))
     finally:
         g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"] = saved
         shutil.rmtree(tmp, ignore_errors=True)
@@ -4842,6 +5000,22 @@ def ua_stores_not_found(names, bq_stores):
     return [n for n in names if _skey(n) not in have and not _is_polevaya(n) and not rz.norm(n).endswith(u" юа")]
 
 
+ALC_SUP_FILE = u"vyvoz_alcohol_suppliers.csv"
+DEFAULT_ALC_SUP = [   # решение 28.10.2026: группа «АЛКОГОЛЬ» Торгсофта; имена - как в матрице и приходах
+    (u"УДК", u""), (u"Немирів", u"в т.ч. Шабо"), (u"Арсенал", u"Азнаурі"), (u"Арсенал (Зубровка)", u""),
+    (u"Арсенал (Азнаурі)", u""), (u"Хлібний Дар", u""), (u"Хлібний Дар (Еліт)", u""), (u"Медоф", u""), (u"Грин Дей", u""),
+    (u"ДДС+", u""), (u"Дісна", u""), (u"Злагода", u"не «Злагода Бакалея»"), (u"Прайм", u""), (u"Ресурс", u""),
+    (u"Свіфт(Алкоголь)", u""),
+]
+
+
+def load_alc_suppliers(dirs):
+    """Поставщики алкоголя для настройки «Алкоголь на Полевую». Справочник\\vyvoz_alcohol_suppliers.csv -> {sup_norm}.
+    Совпадение по имени целиком: «Арсенал ПК( Шейк)» и «Злагода Бакалея» сюда не попадают."""
+    df = _csv_default(dirs, ALC_SUP_FILE, DEFAULT_ALC_SUP, [u"Поставщик", u"Комментарий"])
+    return set(sup_norm(s) for s in df.iloc[:, 0] if sup_norm(s))
+
+
 def load_route_suppliers(dirs):
     """Поставщик -> «РЦ» | «Точки» (перекрывает историю). Справочник\\vyvoz_route_suppliers.csv -> {sup_norm: вид}"""
     df = _csv_default(dirs, ROUTE_SUP_FILE, DEFAULT_ROUTE_SUP, [u"Поставщик", u"Куда (РЦ или Точки)", u"Комментарий"])
@@ -5233,8 +5407,9 @@ def dovyvoz_route(kind, why, key, sold_keys, ref):
 
 def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=False, auto_points=False, per_shop=(5000.0, 7000.0),
               target=None, dovyvoz=False, points=None, min_sum=None, kegs=True, exclude=None, dv=None, rc_to_shops=False,
-              bash_freeze=False, bash_point=None):
+              bash_freeze=False, bash_point=None, alc_to_rc=False):
     """Исправленный лист вывоза -> txt для ТСД по адресам + xlsx для проверки. -> dict(ok, out_dir, files, problems, summary)
+    alc_to_rc - настройка «Алкоголь на Полевую»: поставщики алкоголя (load_alc_suppliers) едут на склад при любом режиме.
     Точки - по спросу на товары ЭТОГО списка (решение владельца 09.10.2026), не меньше per_shop[0] грн на точку в обоих режимах.
     target - «весь вывоз на один магазин»: всё, что обычно делится по точкам (прямые поставки, кеги), едет на этот магазин;
     товар РЦ - как обычно на Полевая-Склад (решение 14.10.2026). Плюс оценка продаж за EFF_DAYS дней на нём и сравнение со
@@ -5363,6 +5538,14 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         if n_rc0:
             info["notes"] = list(info.get("notes") or []) + [
                 u"Весь товар на магазины: товар РЦ (%d поз.) тоже делится по точкам по спросу, на %s ничего не едет" % (n_rc0, SPLIT_RC_NAME)]
+    if alc_to_rc and not dovyvoz:                       # настройка окна: алкоголь - на склад при любом режиме (28.10.2026)
+        alc_ = load_alc_suppliers(dirs)
+        is_alc = [sup_norm(s_) in alc_ for s_ in lst["sup"]]
+        lst["why"] = [(u"алкоголь на %s (настройка): %s" % (SPLIT_RC_NAME, s_)) if a_ else w_
+                      for a_, s_, w_ in zip(is_alc, lst["sup"], lst["why"])]
+        lst["kind"] = [KIND_RC if a_ else k_ for a_, k_ in zip(is_alc, lst["kind"])]
+        info["notes"] = list(info.get("notes") or []) + [
+            u"Алкоголь на %s: %d поз. (поставщики из Справочник\\%s)" % (SPLIT_RC_NAME, sum(is_alc), ALC_SUP_FILE)]
     force, _fl = {}, None
     if dovyvoz:                                         # Бащинский и кофеаппарат - одной партией на одну точку; пакеты - не на склад
         _fl = dovyvoz_force(lst, ref, load_dovyvoz_rules(dirs), dv or {})
@@ -5676,7 +5859,8 @@ def _parse_args(argv):
     a = {"selftest": False, "auto": False, "shops": None, "no_ua": False, "offline": False, "rm": False,
          "excl": [], "incl": [], "split": None, "day": None, "top": None, "with_rc": False, "no_rc": False, "update": None,
          "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False, "to_shop": None,
-         "qt": False, "tk": False, "all_out": False, "rc_to_shops": False, "bash": False, "check_inv": None, "check_txt": [], "check_ua": None, "check_fam": None}
+         "qt": False, "tk": False, "all_out": False, "rc_to_shops": False, "bash": False, "check_inv": None, "check_txt": [], "check_ua": None, "check_fam": None,
+         "missed_ua": None, "alc": False}
     it = iter(argv)
     for x in it:
         t = x.lower().lstrip("-/")
@@ -5710,6 +5894,8 @@ def _parse_args(argv):
             a["bash"] = True
         elif t in ("rc-to-shops", "all-to-shops"):  # распределение: весь товар на магазины, РЦ-товар тоже
             a["rc_to_shops"] = True
+        elif t in ("alc-to-rc", "alcohol"):      # распределение: алкоголь на Полевую-Склад при любом режиме
+            a["alc"] = True
         elif t in ("all-out", "take-all"):        # вывезти ВСЁ: все правила отключены, лишнее человек удаляет в Excel
             a["all_out"] = True
         elif t == "map-list":                     # список кандидатов для таблицы соответствия ШК Family <-> ЮА (Excel)
@@ -5730,6 +5916,8 @@ def _parse_args(argv):
             a["check_ua"] = next(it, "")
         elif t in ("check-fam", "check_fam"):     # выгрузка Family (иначе свежая из МАГАЗИНЫ)
             a["check_fam"] = next(it, "")
+        elif t in ("missed-ua", "missed_ua"):     # пропуски ЮА: что есть на ЮА, а магазину на ЮА не поставлено
+            a["missed_ua"] = next(it, "")
         elif t in ("top", "points", "tochki"):     # на сколько точек делить (1..SPLIT_TOP_N)
             v = next(it, "")
             try:
@@ -7274,6 +7462,409 @@ def run_inv_check(dirs, shop, txt_paths=None, ua_path=None, fam_path=None, recod
     return info
 
 
+# ============ ПРОПУСКИ ЮА: что есть на ЮА, а переводимому магазину на ЮА не поставлено ============
+# Зачем (решение 28.10.2026): закупщицы заказывают на ЮА по каждому магазину отдельно и могут пропустить позицию. Список -
+# товар, который уже пришёл на склад ЮА или на другие точки ЮА, но у переводимого магазина на ЮА нет ни прихода, ни карточки.
+# Магазин товар у Фемели держит (строка в выгрузке, даже с нулём): на складе ЮА остаток > 0 - «Довезти со склада» (готовый
+# список довоза), только на точках - «Нет на складе». Фемели не держит, на складе > 0 - «Возможно». Без остатка нигде - не в
+# списке (решение 28.10.2026: старые нулевые карточки базы - шум). Запуск в любой день.
+
+MISS_PREFIX = u"Пропуски_ЮА_"
+MISS_WH = u"Довезти"
+MISS_NOWH = u"Нет на складе"
+MISS_MAYBE = u"Возможно"
+SHEET_MISS_WH = u"Довезти со склада ЮА"
+SHEET_MISS_NOWH = u"Нет на складе ЮА"
+SHEET_MISS_MAYBE = u"Возможно"
+SHEET_MISS_SUM = u"Итог"
+MISS_SKIP_POINTS = (u"производство",)            # внутренние точки ЮА: их товар - не ассортимент магазина
+
+
+def run_missed_ua(dirs, shop, fam_path=None, recode_df=None, day=None):
+    """Пропуски ЮА по магазину: ассортимент ЮА (склад ЮА, база ЮА других точек, приходы ЮА других точек) минус то, что у
+    магазина на ЮА уже есть (его строки в базе ЮА и в МАГАЗИНЫ_ЮА с любым остатком, его приходы). Один товар под разными ШК
+    (barcode_recode_map, пары, таблица соответствия, то же название) - один товар.
+    -> dict(ok, out_dir, xlsx, files, problems, notes, summary, stats, rows)"""
+    reset_report()
+    dirs.ensure()
+    info = {"ok": False, "problems": [], "notes": [], "files": [], "out_dir": u"", "summary": [], "stats": {}, "rows": []}
+    P, N = info["problems"], info["notes"]
+    k_shop = _skey(shop)
+
+    def is_target(s):
+        return _ua_shop_key(s) == k_shop
+
+    def skip_point(s):
+        return any(w in rz.norm(s) for w in MISS_SKIP_POINTS)
+    # ---- Family: магазин обязателен (по нему важность) ----
+    try:
+        if fam_path:
+            fd = read_state_file(fam_path)[0]
+            fam = fd[fd["shop"].map(lambda s: _skey(s) == k_shop)]
+            fam = fam if len(fam) else fd
+            fam_file = fam_path
+        else:
+            st_ = {_skey(s): v for s, v in scan_stores(dirs).items()}
+            fam_file, fam = st_.get(k_shop, (None, None))
+    except Exception as e:
+        P.append(u"Выгрузка Family не прочитана: %s" % e)
+        return info
+    if fam is None or not len(fam):
+        P.append(u"Нет выгрузки Family магазина «%s» в %s" % (shop, dirs.stores))
+        return info
+    N.append(u"Family: %s (снята %.0f ч назад)" % (os.path.basename(fam_file), check_fresh(u"Family (пропуски ЮА)", fam_file)))
+    # ---- ЮА: что есть вообще и что есть у магазина ----
+    have, pool = set(), {}                       # у магазина на ЮА; {ШК: {точка: остаток}} по остальным точкам
+    names, ua_bcs, wh_q = {}, {}, {}
+    sup = {}
+    try:
+        files = []                                # (файл, DataFrame): база ЮА, склад ЮА, магазины ЮА
+        base = list_xlsx(dirs.ua_base)
+        if base:
+            bp = _pick_latest(base)
+            files.append((bp, read_state_file(bp)[0]))
+            N.append(u"База ЮА: %s (снята %.0f ч назад)" % (os.path.basename(bp), check_fresh(u"база ЮА (пропуски)", bp)))
+        else:
+            N.append(u"Полной базы ЮА нет (%s): ассортимент ЮА - только склад, магазины ЮА и приходы" % dirs.ua_base)
+        wf = list_xlsx(dirs.ua_wh)
+        if wf:
+            wp = _pick_latest(wf)
+            files.append((wp, read_state_file(wp)[0]))
+        files += [(p, read_state_file(p)[0]) for p in list_xlsx(dirs.ua_stores)]
+        rec = [read_receipts_file(p) for p in list_xlsx(dirs.ua_receipts)]
+    except Exception as e:
+        P.append(u"Выгрузка ЮА не прочитана: %s" % e)
+        return info
+    if rec:
+        N.append(u"Приходы ЮА: %s" % u", ".join(os.path.basename(p) for p in list_xlsx(dirs.ua_receipts)))
+    else:
+        N.append(u"Приходов ЮА нет (%s): приходы магазина на ЮА не видны, только его карточки" % dirs.ua_receipts)
+    src_of = {}                                   # точка ЮА есть в нескольких файлах (база и СКЛАД_ЮА) - берётся свежий, без двойного счёта
+    for p, df in files:
+        for s in set(df["shop"]):
+            src_of[str(s)] = _pick_latest([src_of[str(s)], p]) if str(s) in src_of else p
+    for p, df in files:
+        for k, b, n, q, s in zip(df["key"], df["bc"], df["name"], df["qty"], df["shop"]):
+            if not k or skip_point(s) or src_of.get(str(s)) != p:
+                continue
+            names.setdefault(k, n)
+            ua_bcs.setdefault(k, str(b))
+            if is_target(s):
+                have.add(k)
+                continue
+            pool.setdefault(k, {})
+            pool[k][str(s)] = pool[k].get(str(s), 0.0) + float(q)
+            if _is_polevaya(s):
+                wh_q[k] = round(wh_q.get(k, 0.0) + float(q), 3)
+    for r in rec:
+        for k, n, snd, kd, rcv in zip(r["key"], r["name"], r["sender"], r["kind"], r["rcv"]):
+            if not k or skip_point(rcv):
+                continue
+            names.setdefault(k, n)
+            if kd == "sup" and snd:
+                sup[k] = snd                      # последний по файлу приход поставщика
+            if is_target(rcv):
+                have.add(k)
+            else:
+                pool.setdefault(k, {})
+    if not pool:
+        P.append(u"Нет данных ЮА: положите базу ЮА (%s), склад ЮА (%s) или приходы ЮА (%s)" % (dirs.ua_base, dirs.ua_wh, dirs.ua_receipts))
+        return info
+    if not have:
+        N.append(u"У магазина «%s» на ЮА пока ничего нет: в списке весь ассортимент ЮА" % (ua_name(shop) + u" ЮА"))
+    # ---- один товар под разными ШК ----
+    if recode_df is None:
+        recode_df = bq_cached(dirs, "recode", u"SELECT old_barcode, new_barcode FROM `%s`" % RECODE_TABLE,
+                              u"Перекодировка ШК", RECODE_TABLE, required=False)
+    pairs = []
+    if recode_df is not None:
+        pairs += [(bc_key(o), bc_key(n)) for o, n in zip(recode_df["old_barcode"], recode_df["new_barcode"])]
+    pairs += list(load_shk_pairs(dirs).items()) + list(load_ua_map(dirs)[0].items())
+    fam_q, fam_bc = {}, {}
+    for k, b, n, q in zip(fam["key"], fam["bc"], fam["name"], fam["qty"]):
+        if k:
+            fam_q[k] = round(fam_q.get(k, 0.0) + float(q), 3)
+            fam_bc.setdefault(k, str(b))
+    ua_keys = set(pool) | have
+    by_name = {}
+    for k in ua_keys:
+        by_name.setdefault(nname(names.get(k, u"")), set()).add(k)
+    for k, n in zip(fam["key"], fam["name"]):
+        hit = by_name.get(nname(n), set())
+        if k and k not in ua_keys and len(hit) == 1:
+            pairs.append((k, next(iter(hit))))
+    grp = _bc_groups(pairs)
+
+    def same(k):
+        return grp.get(k, {k})
+    try:                                          # поставщик из матрицы (кэш), если прихода поставщика в файле нет
+        mx = pd.read_csv(os.path.join(dirs.cache, "vyvoz_matrix.csv"), dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        m_sup = {bc_key(b): s for b, s in zip(mx["barcode"], mx.get("supplier", [u""] * len(mx))) if s}
+    except Exception:
+        m_sup = {}
+    rows = []
+    for k in sorted(pool):
+        g = same(k)
+        if g & have:
+            continue
+        fks = [x for x in g if x in fam_q]
+        where = sorted((s, q) for s, q in pool[k].items() if not _is_polevaya(s) and q > 0)
+        wq = wh_q.get(k) or 0.0
+        if fks:
+            stv = MISS_WH if wq > 0 else (MISS_NOWH if where else None)
+        else:
+            stv = MISS_MAYBE if wq > 0 else None
+        if stv is None:                           # остатка нет ни на складе, ни на точках (или Фемели не держит и только точки)
+            continue
+        rows.append({"key": k, "bc": ua_bcs.get(k) or rz.restore_barcode(rz.fmt_barcode(k))[0], "name": names.get(k, u""),
+                     "st": stv,
+                     "sup": sup.get(k) or next((m_sup[x] for x in g if x in m_sup), u""),
+                     "wh_q": wh_q.get(k), "pts": len(where),
+                     "where": u"; ".join(u"%s: %s" % (s, (u"%.3f" % q).rstrip(u"0").rstrip(u".") or u"0") for s, q in where),
+                     "fam_bc": fam_bc[fks[0]] if fks else u"", "fam_q": round(sum(fam_q[x] for x in fks), 3) if fks else None})
+    order = (MISS_WH, MISS_NOWH, MISS_MAYBE)
+    rows.sort(key=lambda r: (order.index(r["st"]), sup_norm(r["sup"]) or u"￿", nname(r["name"])))
+    info["rows"] = rows
+    n = {s: sum(1 for r in rows if r["st"] == s) for s in order}
+    wh_all = sum(1 for k in wh_q)
+    wh_stock = sum(1 for q in wh_q.values() if q > 0)
+    info["stats"] = {"wh": n[MISS_WH], "nowh": n[MISS_NOWH], "maybe": n[MISS_MAYBE], "have": len(have), "pool": len(pool),
+                     "wh_all": wh_all, "wh_stock": wh_stock}
+    info["summary"] = [(u"Склад ЮА: весь товар, ШК", wh_all),
+                       (u"Склад ЮА: в наличии, ШК", wh_stock),
+                       (u"У магазина на ЮА уже есть, ШК", len(have)),
+                       (u"Довезти со склада ЮА (у Фемели магазин держит)", n[MISS_WH]),
+                       (u"Нет на складе ЮА, есть только на точках", n[MISS_NOWH]),
+                       (u"Возможно (у Фемели нет, на складе ЮА есть)", n[MISS_MAYBE])]
+    # ---- Excel ----
+    day = day or date.today()
+    nm = rz.safe_name(shop)
+    out_dir = os.path.join(dirs.out, day.strftime("%Y-%m-%d"), nm)
+    os.makedirs(out_dir, exist_ok=True)
+    info["out_dir"] = out_dir
+    wb = Workbook()
+    hdr = [u"ШК ЮА", u"Название товара", u"Поставщик", u"Остаток склад ЮА", u"Точек ЮА с остатком", u"Где есть на ЮА",
+           u"ШК Фемели", u"Остаток Фемели"]
+    for i, (title, stv) in enumerate(((SHEET_MISS_WH, MISS_WH), (SHEET_MISS_NOWH, MISS_NOWH), (SHEET_MISS_MAYBE, MISS_MAYBE))):
+        ws = wb.active if i == 0 else wb.create_sheet(title)
+        ws.title = title
+        ws.append(hdr)
+        for r in rows:
+            if r["st"] == stv:
+                ws.append([r["bc"], r["name"], r["sup"] or None, r["wh_q"], r["pts"], r["where"] or None,
+                           r["fam_bc"] or None, r["fam_q"]])
+        for row_ in ws.iter_rows(min_row=2):
+            row_[0].number_format = row_[6].number_format = "@"
+        ws.freeze_panes = "C2"
+        ws.auto_filter.ref = ws.dimensions
+        _fit_widths(ws)
+    ws = wb.create_sheet(SHEET_MISS_SUM)
+    ws.append([u"Магазин", ua_name(shop) + u" ЮА"])
+    for a, n in info["summary"]:
+        ws.append([a, n])
+    for n_ in N:
+        ws.append([n_])
+    _fit_widths(ws)
+    xp = os.path.join(out_dir, MISS_PREFIX + nm + datetime.now().strftime("_%Y-%m-%d_%H%M%S") + u".xlsx")
+    try:
+        wb.save(xp)
+        info["files"].append(xp)
+        info["xlsx"] = xp
+    except PermissionError:
+        P.append(u"%s занят (закройте в Excel)" % os.path.basename(xp))
+    info["ok"] = not P
+    return info
+
+
+def _missed_text(info):
+    L = []
+    if info.get("xlsx"):
+        L.append(u"Файл: %s" % info["xlsx"])
+    L += [u"  %-44s %5d" % (a, n) for a, n in info.get("summary", [])]
+    L += [u"Примечание: " + x for x in info.get("notes", [])]
+    L += [u"ОШИБКА: " + x for x in info.get("problems", [])]
+    return u"\n".join(L)
+
+
+# ============ СВЕРКА НАКЛАДНОЙ ПЕРЕМЕЩЕНИЯ: что уехало остаётся, что осталось на магазине - убирается ============
+# Зачем (решение 28.10.2026): накладная Торгсофта уже проведена, а часть товара физически осталась на магазине (её переводят
+# на ЮА). Накладную удаляют, новую создают из ТСД: в нём только оставленные строки с фактическим количеством.
+
+WB_PREFIX = u"Сверка_накладной_"
+SHEET_WB_SUM = u"Итог"
+SHEET_WB_KEEP = u"Едет"
+SHEET_WB_DEL = u"Убрано - остаётся"
+SHEET_WB_CHG = u"Изменено количество"
+WB_ORDER_NOTE = (u"Порядок: удалить старую накладную в Торгсофте -> загрузить этот ТСД и провести новую -> снять свежую "
+                 u"выгрузку Family -> «Инвентаризация ЮА». Пока старая накладная проведена, убранного товара в остатке нет.")
+
+
+def _wb_num(v):
+    """Число из накладной: «1 848,00» (неразрывный пробел, запятая) -> 1848.0; пусто -> None."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = re.sub(u"[\\s\xa0]", u"", str(v)).replace(u",", u".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def read_waybill(path):
+    """Накладная внутреннего перемещения (.xls/.xlsx Торгсофта) -> dict(ok, problems, title, sender, receiver, rows, tot_qty,
+    tot_sum). rows: i, bc, key, name, qty, price, sum. Строки «Итого:» сверяются с суммой строк."""
+    info = {"ok": False, "problems": [], "title": u"", "sender": u"", "receiver": u"", "rows": [], "tot_qty": 0.0, "tot_sum": 0.0,
+            "path": path}
+    P = info["problems"]
+    try:
+        raw = pd.read_excel(path, sheet_name=0, header=None, dtype=object)
+    except Exception as e:
+        P.append(u"Накладная не прочитана: %s: %s" % (type(e).__name__, e))
+        return info
+    hi = _find_header(raw, [("штрих",), ("назв", "наимен"), ("кол",)])
+    if hi is None:
+        P.append(u"В файле не найдена строка заголовков (Название товара / Штрих код / Кол-во)")
+        return info
+    for i in range(hi):                       # шапка: «Поставщик: <магазин>», «Получатель: <магазин>»
+        vals = [str(v).strip() for v in raw.iloc[i].tolist() if pd.notna(v) and str(v).strip()]
+        if not vals:
+            continue
+        lab = rz.norm(vals[0])
+        if lab.startswith((u"поставщик", u"отправитель", u"постачальник", u"відправник")) and len(vals) > 1:
+            info["sender"] = vals[1]
+        elif lab.startswith((u"получатель", u"отримувач")) and len(vals) > 1:
+            info["receiver"] = vals[1]
+        elif not info["title"]:
+            info["title"] = vals[0]
+    hdr = [rz.norm(v) if pd.notna(v) else u"" for v in raw.iloc[hi].tolist()]
+
+    def col(*keys):
+        return next((j for j, h in enumerate(hdr) if h and any(k in h for k in keys)), None)
+    c_nm, c_bc, c_q = col(u"назв", u"наимен"), col(u"штрих"), col(u"кол")
+    c_pr, c_sum = col(u"цена роз", u"ціна роз"), col(u"сумма", u"сума")
+    totals = None
+    for i in range(hi + 1, len(raw)):
+        row = raw.iloc[i].tolist()
+        nm = str(row[c_nm]).strip() if c_nm is not None and pd.notna(row[c_nm]) else u""
+        if rz.norm(nm).startswith((u"итого", u"разом", u"всего")):
+            totals = (_wb_num(row[c_q]), _wb_num(row[c_sum]) if c_sum is not None else None)
+            break
+        b = row[c_bc]
+        if b is None or (isinstance(b, float) and pd.isna(b)) or not str(b).strip():
+            continue
+        bc = str(b).strip()
+        if u"штрих" in rz.norm(bc):                              # заголовок повторяется на каждой печатной странице
+            continue
+        bc = bc[:-2] if re.match(r"^\d+\.0$", bc) else bc       # ШК числом в xlsx -> без «.0»
+        q = _wb_num(row[c_q])
+        if q is None:
+            P.append(u"Строка %d (%s): нет количества" % (i + 1, nm))
+            continue
+        pr = _wb_num(row[c_pr]) if c_pr is not None else None
+        sm = _wb_num(row[c_sum]) if c_sum is not None else None
+        info["rows"].append({"i": len(info["rows"]), "bc": bc, "key": bc_key(bc), "name": nm, "qty": round(q, 3),
+                             "price": pr, "sum": sm if sm is not None else round(q * (pr or 0.0), 2),
+                             "bad": not RE_BC_OK.match(bc)})
+    if not info["rows"]:
+        P.append(u"В накладной нет строк с ШК")
+        return info
+    info["tot_qty"] = round(sum(r["qty"] for r in info["rows"]), 3)
+    info["tot_sum"] = round(sum(r["sum"] or 0.0 for r in info["rows"]), 2)
+    if totals and totals[0] is not None and abs(totals[0] - info["tot_qty"]) > 0.001:
+        P.append(u"«Итого» в накладной %s ед., по строкам %s: часть строк не прочитана" % (totals[0], info["tot_qty"]))
+    if totals and totals[1] is not None and abs(totals[1] - info["tot_sum"]) > 0.05:
+        P.append(u"«Итого» в накладной %.2f грн, по строкам %.2f: часть строк не прочитана" % (totals[1], info["tot_sum"]))
+    bad = [r["bc"] for r in info["rows"] if r["bad"]]
+    if bad:
+        info["bad"] = bad                       # не ошибка чтения: такие строки в ТСД не попадут, окно их покажет
+    info["ok"] = not P
+    return info
+
+
+def write_waybill_tsd(dirs, wbi, decisions, day=None):
+    """Новый ТСД по накладной: decisions - по строке накладной (едет: bool, факт: число). Едет и факт > 0 - в txt
+    (ШК;количество, cp1251, \\r\\n; одинаковые ШК складываются); остальное - «убрано, остаётся на магазине».
+    -> dict(ok, problems, out_dir, txt, xlsx, stats)"""
+    out = {"ok": False, "problems": [], "out_dir": u"", "txt": u"", "xlsx": u"", "stats": {}}
+    P = out["problems"]
+    rows = wbi.get("rows", [])
+    if len(decisions) != len(rows):
+        P.append(u"Решений %d, строк в накладной %d" % (len(decisions), len(rows)))
+        return out
+    keep, dele, chg = [], [], []
+    for r, (go, q) in zip(rows, decisions):
+        q = round(float(q or 0), 3)
+        if go and q > 0:
+            keep.append((r, q))
+            if abs(q - r["qty"]) > 0.0005:
+                chg.append((r, q))
+        else:
+            dele.append(r)
+    bad = [r["bc"] for r, _q in keep if r["bad"]]
+    if bad:
+        P.append(u"ШК не из 6-14 цифр (в ТСД не загрузить): %s - снимите галочку и внесите вручную" % u", ".join(bad))
+    if not keep:
+        P.append(u"Ни одна строка не оставлена: ТСД пустой, не пишу")
+    if P:
+        return out
+    agg = {}
+    for r, q in keep:
+        agg[r["bc"]] = round(agg.get(r["bc"], 0.0) + q, 3)
+    day = day or date.today()
+    snd, rcv = rz.safe_name(wbi.get("sender") or u"Отправитель"), rz.safe_name(wbi.get("receiver") or u"Получатель")
+    out_dir = os.path.join(dirs.out, day.strftime("%Y-%m-%d"), snd, WB_PREFIX + datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+    os.makedirs(out_dir, exist_ok=True)
+    out["out_dir"] = out_dir
+    txt = os.path.join(out_dir, rcv + u".txt")
+    ir = pd.DataFrame({"bc": list(agg), "qty": list(agg.values()), "step": 1.0, "is_weight": False})
+    rz.write_shop_txt(txt, ir)
+    out["txt"] = txt
+    got = _read_txt_dict(txt, P, u"новый ТСД")
+    if got != agg:
+        P.append(u"новый ТСД: после записи не совпал с отмеченным, расхождений %d" % len(set(agg.items()) ^ set(got.items())))
+    s_keep = round(sum(q * (r["price"] or 0.0) for r, q in keep), 2)
+    s_del = round(sum(r["sum"] or 0.0 for r in dele), 2)
+    out["stats"] = {"rows": len(rows), "keep": len(keep), "removed": len(dele), "changed": len(chg), "lines": len(agg),
+                    "keep_qty": round(sum(q for _r, q in keep), 3), "keep_sum": s_keep, "del_sum": s_del}
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_WB_SUM
+    for a in ((u"Накладная", os.path.basename(wbi.get("path", u""))), (u"Заголовок", wbi.get("title", u"")),
+              (u"Отправитель", wbi.get("sender", u"")), (u"Получатель", wbi.get("receiver", u"")),
+              (u"Строк в накладной", len(rows), wbi.get("tot_qty"), wbi.get("tot_sum")),
+              (u"Едет (новая накладная)", len(keep), out["stats"]["keep_qty"], s_keep),
+              (u"  из них количество изменено", len(chg)),
+              (u"Убрано - остаётся на магазине", len(dele), round(sum(r["qty"] for r in dele), 3), s_del),
+              (u"Строк в ТСД", len(agg)), (u"Файл ТСД", txt), (), (WB_ORDER_NOTE,)):
+        ws.append(list(a))
+    _fit_widths(ws)
+    for title, hdr, data in (
+            (SHEET_WB_KEEP, (u"Штрих-код", u"Название товара", u"В накладной", u"Факт", u"Цена роз.", u"Сумма роз. факт"),
+             [(r["bc"], r["name"], r["qty"], q, r["price"], round(q * (r["price"] or 0.0), 2)) for r, q in keep]),
+            (SHEET_WB_DEL, (u"Штрих-код", u"Название товара", u"Количество", u"Цена роз.", u"Сумма роз."),
+             [(r["bc"], r["name"], r["qty"], r["price"], r["sum"]) for r in dele]),
+            (SHEET_WB_CHG, (u"Штрих-код", u"Название товара", u"В накладной", u"Факт", u"Остаётся на магазине"),
+             [(r["bc"], r["name"], r["qty"], q, round(r["qty"] - q, 3)) for r, q in chg])):
+        ws = wb.create_sheet(title)
+        ws.append(list(hdr))
+        for x in data:
+            ws.append(list(x))
+        for row_ in ws.iter_rows(min_row=2, max_col=1):
+            row_[0].number_format = "@"
+        ws.freeze_panes = "A2"
+        _fit_widths(ws)
+    xp = os.path.join(out_dir, u"Сверка накладной " + snd + u".xlsx")
+    try:
+        wb.save(xp)
+        out["xlsx"] = xp
+    except PermissionError:
+        P.append(u"%s занят (закройте в Excel): txt записан" % os.path.basename(xp))
+    out["ok"] = not P
+    return out
+
+
 # ============ ОКНО: входные папки, выбор магазина, лист для распределения ============
 
 HIDDEN_STORES_FILE = u"vyvoz_hidden_stores.csv"
@@ -7635,6 +8226,17 @@ def validate_split_input(dirs, path):
     chk = corrected_check(path)
     if not chk["ok"]:
         return {"ok": False, "level": "warn", "chk": chk, "text": chk["text"]}
+    # список вывоза магазина пересобран после того, как лист сохранили в Корректировка_ЮА: лист устарел (на ЮА с тех пор
+    # могли поставить товар, остаток изменился). 28.10.2026: Ньютона 102 распределён старым листом - 335 поз. вместо 209.
+    k_ = _skey(rz.safe_name(chk["shop"]))
+    newer = [fp for _l, fp in auto_lists(dirs, limit=100)
+             if _skey(os.path.basename(os.path.dirname(fp))) == k_ and _mtime(fp) > _mtime(path)]
+    if newer:
+        ts = lambda p_: datetime.fromtimestamp(_mtime(p_)).strftime("%d.%m %H:%M")
+        return {"ok": False, "level": "warn", "chk": chk, "fresh": newer[0],
+                "text": u"Лист устарел: список вывоза «%s» пересобран %s, а этот лист сохранён %s. Возьмите свежий список "
+                        u"(«Взять без правок») или перенесите правки в него и сохраните в «%s»."
+                        % (chk["shop"], ts(newer[0]), ts(path), CORR_DIR)}
     return {"ok": True, "level": "", "chk": chk, "text": chk["text"]}
 
 
@@ -7666,6 +8268,7 @@ UI_PAGES = {                    # заголовок и пояснение ка�
     "vyvoz": (u"Списки вывоза", u"Что делает: по остатку магазина составляет список товара, который нужно вывезти на Полевая-Склад (лист для печати и файл для ТСД). Порядок: 1) положите свежие выгрузки; 2) проверьте магазин; 3) нажмите «Сформировать списки вывоза»; 4) откройте список в Excel, удалите лишнее и сохраните в «Корректировка_ЮА»."),
     "split": (u"Распределение по точкам", u"Что делает: делит список вывоза на файлы для ТСД по адресам: товар РЦ - на «Полевая-Склад», прямые поставки - на самые сильные торговые точки. Список берётся ТОЛЬКО из папки «Корректировка_ЮА»: правили его в Excel - сохраните туда; правок нет - нажмите «Взять без правок». На следующий день сюда не возвращайтесь - используйте «Подчистка списка»."),
     "upd": (u"Подчистка списка", u"Что делает: убирает из вашего списка и из готовых файлов ТСД товар, который уже пришёл на ЮА (стал ЮА-шным) - его вывозить не нужно. Берётся ваш исправленный лист и готовые файлы; они не меняются. Очищенные копии лежат в папке Обновление_<дата> - в ТСД берите файлы оттуда."),
+    "nakl": (u"Сверка накладной", u"Что делает: по проведённой накладной перемещения собирает новый файл для ТСД. Загрузите накладную (Excel из Торгсофта), снимите галочку «Едет» у того, что осталось на магазине, поправьте «Факт», где количество другое, и нажмите «Сформировать ТСД». Старую накладную удалите в Торгсофте, новую создайте из этого ТСД. Убранный товар появится в остатке магазина после удаления старой накладной: «Инвентаризацию ЮА» стройте по выгрузке, снятой после этого."),
     "fin": (u"Инвентаризация ЮА (финал)", u"Выгрузку Family снимайте ПОСЛЕ проведения вывоза. Всё, что осталось на полке, кроме кулинарии и штучных, идёт в файл инвентаризации ЮА с теми ШК, которые знает ЮА. Ваши правки списка вывоза здесь не нужны: файл строится по факту остатка."),
     "serv": (u"Сервис", u"Проверка программы и быстрый доступ к папкам."),
     "log": (u"Журнал", u"Подробный отчёт по всем действиям за сеанс."),
@@ -9188,10 +9791,14 @@ def main(argv=None):
         info = run_inv_check(DIRS, args["check_inv"], txt_paths=args["check_txt"], ua_path=args["check_ua"], fam_path=args["check_fam"])
         print(_final_text(info))
         return 0 if info.get("ok") else 2
+    if args["missed_ua"]:
+        info = run_missed_ua(DIRS, args["missed_ua"])
+        print(_missed_text(info))
+        return 0 if info.get("ok") else 2
     if args["split"]:
         info = run_split(DIRS, args["split"], shop=(args["shops"] or [None])[0], day=args["day"], top_n=args["top"], skip_rc=args["no_rc"],
                          auto_points=args["auto_points"], target=args["to_shop"], rc_to_shops=args["rc_to_shops"],
-                         bash_freeze=args["bash"])
+                         bash_freeze=args["bash"], alc_to_rc=args["alc"])
         print(_split_text(info))
         return 0 if info.get("ok") else 2
     if args["map_list"]:

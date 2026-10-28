@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QButtonGroup, QCheckBox, QHBoxLayout, QLabel, QMes
 from . import tokens as T
 from .app import Page
 from .suppliers import SuppliersDialog
-from .widgets import Banner, Card, RowsModel, StatusLine, button, fit_rows, muted, table
+from .widgets import Banner, Card, RowsModel, StatusLine, button, fit_rows, help_button, muted, table
 
 INPUT_HELP = (u"Нужен свежий файл в каждой обязательной папке. Склад ЮА - со ВСЕМИ строками, и нулевыми; приходы ЮА - "
               u"за весь период. Если в папке два файла (×2), берётся самый свежий. Старый или отсутствующий файл выгрузите "
@@ -18,6 +18,11 @@ INPUT_HELP = (u"Нужен свежий файл в каждой обязате�
 STORE_HELP = (u"По умолчанию выбран магазин с самой свежей выгрузкой. Нужен другой - щёлкните по нему; несколько - "
               u"Ctrl или Shift. «Убрать из списка» убирает магазин только из таблицы, файл выгрузки остаётся в папке; "
               u"«Вернуть убранные» показывает их снова.")
+MISS_HELP = (u"Что закупщицы не поставили выбранному магазину на ЮА: товар уже пришёл на склад ЮА или на другие точки ЮА, "
+             u"а у этого магазина на ЮА нет ни прихода, ни карточки. «Довезти со склада ЮА» - магазин товар у Фемели держит, "
+             u"на складе ЮА он в наличии (готовый список довоза); «Нет на складе ЮА» - держит, но остаток только на точках; "
+             u"«Возможно» - у Фемели нет, на складе ЮА есть. Товар без остатка нигде в список не попадает. Можно запускать в любой день, лучше до перевода: нужны свежие "
+             u"выгрузки магазина (МАГАЗИНЫ), базы ЮА (БАЗА_ЮА) и приходов ЮА (ПРИХОДЫ_ЮА).")
 MODE_SHORT = {                  # одна строка на экране; полное описание режима - под «?» (mode_description ядра)
     "normal": u"Автоматические исключения: сигареты, кеги, кулинария, расходники, поставщики и ШК из настроек.",
     "manual": u"Сигареты и кеги тоже попадут в список - лишнее удалите в Excel.",
@@ -69,6 +74,10 @@ class VyvozPage(Page):
         for b in (self.b_all, self.b_hide, self.b_show):
             row.addWidget(b)
         row.addStretch(1)
+        self.b_miss = button(u"Пропуски ЮА (Excel)", "search", on_click=self.missed_ua)
+        win.busy_widgets.append(self.b_miss)
+        row.addWidget(self.b_miss)
+        row.addWidget(help_button(MISS_HELP, u"Пропуски ЮА"))
         c.lay.addLayout(row)
         self.pick_line = StatusLine()                        # на всю ширину карточки, а не столбиком рядом с кнопками
         c.lay.addWidget(self.pick_line)
@@ -333,9 +342,30 @@ class VyvozPage(Page):
             self.summary.setText(u"%s · %s" % (sel[0] if len(sel) == 1 else u"%d магазина(ов)" % len(sel), mode_t))
             self.go_btn.setEnabled(self.win.worker is None)
             self.go_btn.setToolTip(u"Excel-лист и файл для ТСД - в папке ВЫВОЗ\\<дата>\\<магазин>")
+        self.b_miss.setEnabled(len(sel) == 1 and self.win.worker is None)
+        self.b_miss.setToolTip(u"Пропуски ЮА: %s" % sel[0] if len(sel) == 1 else u"Выберите один магазин в таблице")
 
     def shown(self):
         self.update_action()
+
+    def missed_ua(self):
+        sel = self.selected()
+        if len(sel) != 1:
+            return
+        shop = sel[0]
+
+        def done(info, out):
+            info = info or {}
+            self.win.journal(u"Пропуски ЮА: %s" % shop, self.core._missed_text(info))
+            if info.get("ok"):
+                st = info.get("stats", {})
+                self.win.status(u"Пропуски ЮА «%s»: довезти со склада %d, нет на складе %d, возможно %d"
+                                % (shop, st.get("wh", 0), st.get("nowh", 0), st.get("maybe", 0)), "OK")
+                self.core.open_path(info["xlsx"])
+            else:
+                self.win.status(u"Пропуски ЮА: есть ошибки", "ERR")
+                QMessageBox.warning(self, u"Пропуски ЮА", u"\n".join(info.get("problems", [])) or u"Не получилось")
+        self.win.run_task(u"Пропуски ЮА: %s" % shop, lambda: self.core.run_missed_ua(self.d, shop), done)
 
     def go(self):
         shops = self.selected()
