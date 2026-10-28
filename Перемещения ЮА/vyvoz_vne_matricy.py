@@ -3138,6 +3138,7 @@ def _self_test_body(gui=False):
     _selftest_map(ck)
     _selftest_ua_base(ck)
     _selftest_inv_check(ck)
+    _selftest_missed_ua(ck)
 
     reset_report()
     if fails:
@@ -3332,6 +3333,52 @@ def _selftest_inv_check(ck):
         pa = _parse_args(["--check-inv", u"Тест 1", "--check-txt", "a.txt;b.txt", "--check-ua", "u.xlsx", "--check-fam", "f.xlsx"])
         ck(pa["check_inv"] == u"Тест 1" and pa["check_txt"] == ["a.txt", "b.txt"] and pa["check_ua"] == "u.xlsx" and pa["check_fam"] == "f.xlsx",
            "аргументы сверки: %s" % pa)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_missed_ua(ck):
+    """Пропуски ЮА: товар есть на складе ЮА / других точках ЮА, а переводимому магазину на ЮА не поставлен.
+    «Важно» - магазин этот товар у Фемели держит (строка в выгрузке, даже с нулём; по ШК, склейке или названию)."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_miss_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        A, B, C, CF, Dd, E, EF, F, P, G = (_ean("48200800000%d" % i) for i in range(10))
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"], ws["A2"] = u"Состояние склада по всем центрам учета", u"Состояние склада"
+        ws.append([u"№", u"Название товара", u"Штрих-код", u"Цена розничная", u"Количество", u"Ед. изм.", u"Себестоимость", u"Склад"])
+        for i, (b, n, q, s) in enumerate(((A, u"Тов А", 5, u"Полевая-Склад ЮА"), (B, u"Тов Б", 0, u"Полевая-Склад ЮА"),
+                                          (C, u"Тов В ЮА", 3, u"Тест 2 ЮА"), (Dd, u"Тов Г", 1, u"Тест 2 ЮА"),
+                                          (Dd, u"Тов Г", 2, u"Тест 1 ЮА"), (P, u"Тов Произв", 4, u"Производство ЮА"),
+                                          (A, u"Тов А", 2, u"Тест 2 ЮА")), 1):
+            ws.append([i, n, b, 1.0, q, u"шт", 10.0, s])
+        wb.save(os.path.join(d.ua_base, u"База ЮА 27.10.2026.xlsx"))
+        _write_receipts_xlsx(os.path.join(d.ua_receipts, u"ПРИХОДЫ_ТОВАРА 27.10.2026.xlsx"),
+                             [(A, u"Тов А", u"Поставщик А", 5), (E, u"Тов Е", u"Поставщик Е", 2, u"Тест 2 ЮА"),
+                              (F, u"Тов Ф", u"Поставщик Ф", 1, u"Тест 1 ЮА")])
+        _write_state_xlsx(os.path.join(d.stores, u"Состояние склада Тест 1 27.10.2026.xlsx"), u"Тест 1",
+                          [(A, u"Тов А", 3, u"шт", 10.0), (CF, u"Тов В", 0, u"шт", 9.0), (EF, u"Тов Е", 1, u"шт", 7.0),
+                           (G, u"Тов Ж", 2, u"шт", 1.0)])
+        rec = pd.DataFrame({"old_barcode": [C], "new_barcode": [CF]})
+        reset_report()
+        info = run_missed_ua(d, u"Тест 1", recode_df=rec)
+        ck(info["ok"], "пропуски ЮА: %s" % info["problems"])
+        st = {r["key"]: r["st"] for r in info.get("rows", [])}
+        ck(st == {bc_key(A): MISS_IMP, bc_key(C): MISS_IMP, bc_key(E): MISS_IMP, bc_key(B): MISS_MAYBE},
+           "пропуски ЮА: что пропущено и важность (Г и Ф у магазина есть, производство не считаем): %s" % st)
+        fr = {r["key"]: r for r in info.get("rows", [])}
+        ck(fr.get(bc_key(A), {}).get("fam_q") == 3.0 and fr.get(bc_key(A), {}).get("sup") == u"Поставщик А"
+           and fr.get(bc_key(A), {}).get("wh_q") == 5.0 and u"Тест 2 ЮА: 2" in fr.get(bc_key(A), {}).get("where", u""),
+           "пропуски ЮА: остаток Фемели, поставщик, склад ЮА, где ещё: %s" % fr.get(bc_key(A)))
+        ck(fr.get(bc_key(C), {}).get("fam_bc") == CF and fr.get(bc_key(E), {}).get("fam_bc") == EF,
+           "пропуски ЮА: ШК Фемели по склейке и по названию: %s / %s" % (fr.get(bc_key(C)), fr.get(bc_key(E))))
+        ck(info.get("xlsx") and load_workbook(info["xlsx"]).sheetnames == [SHEET_MISS_IMP, SHEET_MISS_MAYBE, SHEET_MISS_SUM],
+           "пропуски ЮА: xlsx и листы: %s" % info.get("xlsx"))
+        ck(not run_missed_ua(d, u"Нет такого", recode_df=rec)["ok"], "пропуски ЮА: магазина нет среди выгрузок Family -> ошибка")
+        pa = _parse_args(["--missed-ua", u"Тест 1"])
+        ck(pa.get("missed_ua") == u"Тест 1", "аргументы пропусков ЮА: %s" % pa.get("missed_ua"))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -5676,7 +5723,8 @@ def _parse_args(argv):
     a = {"selftest": False, "auto": False, "shops": None, "no_ua": False, "offline": False, "rm": False,
          "excl": [], "incl": [], "split": None, "day": None, "top": None, "with_rc": False, "no_rc": False, "update": None,
          "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False, "to_shop": None,
-         "qt": False, "tk": False, "all_out": False, "rc_to_shops": False, "bash": False, "check_inv": None, "check_txt": [], "check_ua": None, "check_fam": None}
+         "qt": False, "tk": False, "all_out": False, "rc_to_shops": False, "bash": False, "check_inv": None, "check_txt": [], "check_ua": None, "check_fam": None,
+         "missed_ua": None}
     it = iter(argv)
     for x in it:
         t = x.lower().lstrip("-/")
@@ -5730,6 +5778,8 @@ def _parse_args(argv):
             a["check_ua"] = next(it, "")
         elif t in ("check-fam", "check_fam"):     # выгрузка Family (иначе свежая из МАГАЗИНЫ)
             a["check_fam"] = next(it, "")
+        elif t in ("missed-ua", "missed_ua"):     # пропуски ЮА: что есть на ЮА, а магазину на ЮА не поставлено
+            a["missed_ua"] = next(it, "")
         elif t in ("top", "points", "tochki"):     # на сколько точек делить (1..SPLIT_TOP_N)
             v = next(it, "")
             try:
@@ -7272,6 +7322,213 @@ def run_inv_check(dirs, shop, txt_paths=None, ua_path=None, fam_path=None, recod
     info["rows"], info["fam_rows"], info["extra_rows"] = rows, fam_out, extra
     info["ok"] = not P
     return info
+
+
+# ============ ПРОПУСКИ ЮА: что есть на ЮА, а переводимому магазину на ЮА не поставлено ============
+# Зачем (решение 28.10.2026): закупщицы заказывают на ЮА по каждому магазину отдельно и могут пропустить позицию. Список -
+# товар, который уже пришёл на склад ЮА или на другие точки ЮА, но у переводимого магазина на ЮА нет ни прихода, ни карточки.
+# «Важно» - магазин этот товар у Фемели держит (строка в выгрузке, даже с нулём); «Возможно» - остальное. Запуск в любой день.
+
+MISS_PREFIX = u"Пропуски_ЮА_"
+MISS_IMP = u"Важно"
+MISS_MAYBE = u"Возможно"
+SHEET_MISS_IMP = u"Важно - у Фемели есть"
+SHEET_MISS_MAYBE = u"Возможно"
+SHEET_MISS_SUM = u"Итог"
+MISS_SKIP_POINTS = (u"производство",)            # внутренние точки ЮА: их товар - не ассортимент магазина
+
+
+def run_missed_ua(dirs, shop, fam_path=None, recode_df=None, day=None):
+    """Пропуски ЮА по магазину: ассортимент ЮА (склад ЮА, база ЮА других точек, приходы ЮА других точек) минус то, что у
+    магазина на ЮА уже есть (его строки в базе ЮА и в МАГАЗИНЫ_ЮА с любым остатком, его приходы). Один товар под разными ШК
+    (barcode_recode_map, пары, таблица соответствия, то же название) - один товар.
+    -> dict(ok, out_dir, xlsx, files, problems, notes, summary, stats, rows)"""
+    reset_report()
+    dirs.ensure()
+    info = {"ok": False, "problems": [], "notes": [], "files": [], "out_dir": u"", "summary": [], "stats": {}, "rows": []}
+    P, N = info["problems"], info["notes"]
+    k_shop = _skey(shop)
+
+    def is_target(s):
+        return _ua_shop_key(s) == k_shop
+
+    def skip_point(s):
+        return any(w in rz.norm(s) for w in MISS_SKIP_POINTS)
+    # ---- Family: магазин обязателен (по нему важность) ----
+    try:
+        if fam_path:
+            fd = read_state_file(fam_path)[0]
+            fam = fd[fd["shop"].map(lambda s: _skey(s) == k_shop)]
+            fam = fam if len(fam) else fd
+            fam_file = fam_path
+        else:
+            st_ = {_skey(s): v for s, v in scan_stores(dirs).items()}
+            fam_file, fam = st_.get(k_shop, (None, None))
+    except Exception as e:
+        P.append(u"Выгрузка Family не прочитана: %s" % e)
+        return info
+    if fam is None or not len(fam):
+        P.append(u"Нет выгрузки Family магазина «%s» в %s" % (shop, dirs.stores))
+        return info
+    N.append(u"Family: %s (снята %.0f ч назад)" % (os.path.basename(fam_file), check_fresh(u"Family (пропуски ЮА)", fam_file)))
+    # ---- ЮА: что есть вообще и что есть у магазина ----
+    have, pool = set(), {}                       # у магазина на ЮА; {ШК: {точка: остаток}} по остальным точкам
+    names, ua_bcs, wh_q = {}, {}, {}
+    sup = {}
+    try:
+        files = []                                # (файл, DataFrame): база ЮА, склад ЮА, магазины ЮА
+        base = list_xlsx(dirs.ua_base)
+        if base:
+            bp = _pick_latest(base)
+            files.append((bp, read_state_file(bp)[0]))
+            N.append(u"База ЮА: %s (снята %.0f ч назад)" % (os.path.basename(bp), check_fresh(u"база ЮА (пропуски)", bp)))
+        else:
+            N.append(u"Полной базы ЮА нет (%s): ассортимент ЮА - только склад, магазины ЮА и приходы" % dirs.ua_base)
+        wf = list_xlsx(dirs.ua_wh)
+        if wf:
+            wp = _pick_latest(wf)
+            files.append((wp, read_state_file(wp)[0]))
+        files += [(p, read_state_file(p)[0]) for p in list_xlsx(dirs.ua_stores)]
+        rec = [read_receipts_file(p) for p in list_xlsx(dirs.ua_receipts)]
+    except Exception as e:
+        P.append(u"Выгрузка ЮА не прочитана: %s" % e)
+        return info
+    if rec:
+        N.append(u"Приходы ЮА: %s" % u", ".join(os.path.basename(p) for p in list_xlsx(dirs.ua_receipts)))
+    else:
+        N.append(u"Приходов ЮА нет (%s): приходы магазина на ЮА не видны, только его карточки" % dirs.ua_receipts)
+    src_of = {}                                   # точка ЮА есть в нескольких файлах (база и СКЛАД_ЮА) - берётся свежий, без двойного счёта
+    for p, df in files:
+        for s in set(df["shop"]):
+            src_of[str(s)] = _pick_latest([src_of[str(s)], p]) if str(s) in src_of else p
+    for p, df in files:
+        for k, b, n, q, s in zip(df["key"], df["bc"], df["name"], df["qty"], df["shop"]):
+            if not k or skip_point(s) or src_of.get(str(s)) != p:
+                continue
+            names.setdefault(k, n)
+            ua_bcs.setdefault(k, str(b))
+            if is_target(s):
+                have.add(k)
+                continue
+            pool.setdefault(k, {})
+            pool[k][str(s)] = pool[k].get(str(s), 0.0) + float(q)
+            if _is_polevaya(s):
+                wh_q[k] = round(wh_q.get(k, 0.0) + float(q), 3)
+    for r in rec:
+        for k, n, snd, kd, rcv in zip(r["key"], r["name"], r["sender"], r["kind"], r["rcv"]):
+            if not k or skip_point(rcv):
+                continue
+            names.setdefault(k, n)
+            if kd == "sup" and snd:
+                sup[k] = snd                      # последний по файлу приход поставщика
+            if is_target(rcv):
+                have.add(k)
+            else:
+                pool.setdefault(k, {})
+    if not pool:
+        P.append(u"Нет данных ЮА: положите базу ЮА (%s), склад ЮА (%s) или приходы ЮА (%s)" % (dirs.ua_base, dirs.ua_wh, dirs.ua_receipts))
+        return info
+    if not have:
+        N.append(u"У магазина «%s» на ЮА пока ничего нет: в списке весь ассортимент ЮА" % (ua_name(shop) + u" ЮА"))
+    # ---- один товар под разными ШК ----
+    if recode_df is None:
+        recode_df = bq_cached(dirs, "recode", u"SELECT old_barcode, new_barcode FROM `%s`" % RECODE_TABLE,
+                              u"Перекодировка ШК", RECODE_TABLE, required=False)
+    pairs = []
+    if recode_df is not None:
+        pairs += [(bc_key(o), bc_key(n)) for o, n in zip(recode_df["old_barcode"], recode_df["new_barcode"])]
+    pairs += list(load_shk_pairs(dirs).items()) + list(load_ua_map(dirs)[0].items())
+    fam_q, fam_bc = {}, {}
+    for k, b, n, q in zip(fam["key"], fam["bc"], fam["name"], fam["qty"]):
+        if k:
+            fam_q[k] = round(fam_q.get(k, 0.0) + float(q), 3)
+            fam_bc.setdefault(k, str(b))
+    ua_keys = set(pool) | have
+    by_name = {}
+    for k in ua_keys:
+        by_name.setdefault(nname(names.get(k, u"")), set()).add(k)
+    for k, n in zip(fam["key"], fam["name"]):
+        hit = by_name.get(nname(n), set())
+        if k and k not in ua_keys and len(hit) == 1:
+            pairs.append((k, next(iter(hit))))
+    grp = _bc_groups(pairs)
+
+    def same(k):
+        return grp.get(k, {k})
+    try:                                          # поставщик из матрицы (кэш), если прихода поставщика в файле нет
+        mx = pd.read_csv(os.path.join(dirs.cache, "vyvoz_matrix.csv"), dtype=str, keep_default_na=False, encoding="utf-8-sig")
+        m_sup = {bc_key(b): s for b, s in zip(mx["barcode"], mx.get("supplier", [u""] * len(mx))) if s}
+    except Exception:
+        m_sup = {}
+    rows = []
+    for k in sorted(pool):
+        g = same(k)
+        if g & have:
+            continue
+        fks = [x for x in g if x in fam_q]
+        where = sorted((s, q) for s, q in pool[k].items() if not _is_polevaya(s))
+        rows.append({"key": k, "bc": ua_bcs.get(k) or rz.restore_barcode(rz.fmt_barcode(k))[0], "name": names.get(k, u""),
+                     "st": MISS_IMP if fks else MISS_MAYBE,
+                     "sup": sup.get(k) or next((m_sup[x] for x in g if x in m_sup), u""),
+                     "wh_q": wh_q.get(k), "pts": sum(1 for _s, q in where if q > 0),
+                     "where": u"; ".join(u"%s: %s" % (s, (u"%.3f" % q).rstrip(u"0").rstrip(u".") or u"0") for s, q in where),
+                     "fam_bc": fam_bc[fks[0]] if fks else u"", "fam_q": round(sum(fam_q[x] for x in fks), 3) if fks else None})
+    rows.sort(key=lambda r: (r["st"] != MISS_IMP, sup_norm(r["sup"]) or u"￿", nname(r["name"])))
+    info["rows"] = rows
+    n_imp = sum(1 for r in rows if r["st"] == MISS_IMP)
+    info["stats"] = {"imp": n_imp, "maybe": len(rows) - n_imp, "have": len(have), "pool": len(pool)}
+    info["summary"] = [(u"Ассортимент ЮА (склад и другие точки), ШК", len(pool)),
+                       (u"У магазина на ЮА уже есть, ШК", len(have)),
+                       (u"Пропущено: важно (у Фемели магазин держит)", n_imp),
+                       (u"Пропущено: возможно", len(rows) - n_imp)]
+    # ---- Excel ----
+    day = day or date.today()
+    nm = rz.safe_name(shop)
+    out_dir = os.path.join(dirs.out, day.strftime("%Y-%m-%d"), nm)
+    os.makedirs(out_dir, exist_ok=True)
+    info["out_dir"] = out_dir
+    wb = Workbook()
+    hdr = [u"ШК ЮА", u"Название товара", u"Поставщик", u"Остаток склад ЮА", u"Точек ЮА с остатком", u"Где есть на ЮА",
+           u"ШК Фемели", u"Остаток Фемели"]
+    for i, (title, stv) in enumerate(((SHEET_MISS_IMP, MISS_IMP), (SHEET_MISS_MAYBE, MISS_MAYBE))):
+        ws = wb.active if i == 0 else wb.create_sheet(title)
+        ws.title = title
+        ws.append(hdr)
+        for r in rows:
+            if r["st"] == stv:
+                ws.append([r["bc"], r["name"], r["sup"] or None, r["wh_q"], r["pts"], r["where"] or None,
+                           r["fam_bc"] or None, r["fam_q"]])
+        for row_ in ws.iter_rows(min_row=2):
+            row_[0].number_format = row_[6].number_format = "@"
+        ws.freeze_panes = "C2"
+        ws.auto_filter.ref = ws.dimensions
+        _fit_widths(ws)
+    ws = wb.create_sheet(SHEET_MISS_SUM)
+    ws.append([u"Магазин", ua_name(shop) + u" ЮА"])
+    for a, n in info["summary"]:
+        ws.append([a, n])
+    for n_ in N:
+        ws.append([n_])
+    _fit_widths(ws)
+    xp = os.path.join(out_dir, MISS_PREFIX + nm + datetime.now().strftime("_%Y-%m-%d_%H%M%S") + u".xlsx")
+    try:
+        wb.save(xp)
+        info["files"].append(xp)
+        info["xlsx"] = xp
+    except PermissionError:
+        P.append(u"%s занят (закройте в Excel)" % os.path.basename(xp))
+    info["ok"] = not P
+    return info
+
+
+def _missed_text(info):
+    L = []
+    if info.get("xlsx"):
+        L.append(u"Файл: %s" % info["xlsx"])
+    L += [u"  %-44s %5d" % (a, n) for a, n in info.get("summary", [])]
+    L += [u"Примечание: " + x for x in info.get("notes", [])]
+    L += [u"ОШИБКА: " + x for x in info.get("problems", [])]
+    return u"\n".join(L)
 
 
 # ============ ОКНО: входные папки, выбор магазина, лист для распределения ============
@@ -9187,6 +9444,10 @@ def main(argv=None):
     if args["check_inv"]:
         info = run_inv_check(DIRS, args["check_inv"], txt_paths=args["check_txt"], ua_path=args["check_ua"], fam_path=args["check_fam"])
         print(_final_text(info))
+        return 0 if info.get("ok") else 2
+    if args["missed_ua"]:
+        info = run_missed_ua(DIRS, args["missed_ua"])
+        print(_missed_text(info))
         return 0 if info.get("ok") else 2
     if args["split"]:
         info = run_split(DIRS, args["split"], shop=(args["shops"] or [None])[0], day=args["day"], top_n=args["top"], skip_rc=args["no_rc"],
