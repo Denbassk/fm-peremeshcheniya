@@ -30,6 +30,9 @@ BASH_HELP = (u"Заморозка Бащинского (ШК из ВХОД_ВЫ�
              u"Можно выбрать точку из списка. Выбор запоминается. Остальной товар распределяется как обычно.")
 RCS_HELP = (u"Весь товар едет на магазины, включая тот, что обычно идёт через РЦ: он делится по точкам по спросу, файл на %s не "
             u"создаётся. Нужно, когда склад не принимает (например, магазин закрывается и вывоз идёт сразу на точки).")
+ALC_HELP = (u"Алкоголь едет на %s при любом способе деления, даже с галочкой «весь товар на магазины» и «всё на один магазин». "
+            u"Алкоголь - поставщики из Справочник\\%s (УДК, Немирів, Арсенал, Хлібний Дар, Медоф, Грин Дей, Прайм, Ресурс, Злагода, "
+            u"Дісна, ДДС+, Свіфт); список можно править. Выбор запоминается.")
 HOW = (("top", u"По точкам"), ("auto", u"Подобрать число точек по сумме"), ("one", u"Всё на один магазин"))
 
 
@@ -116,6 +119,12 @@ class SplitPage(Page):
         self.rcs_cb.setAccessibleName(u"Весь товар на магазины, включая товар РЦ")
         self.rcs_cb.toggled.connect(lambda *_: self.on_rcs())
         c.lay.addWidget(self.rcs_cb)
+        self.alc_chk = QCheckBox(u"Алкоголь на %s при любом способе деления" % core.SPLIT_RC_NAME)
+        self.alc_chk.setToolTip(ALC_HELP % (core.SPLIT_RC_NAME, core.ALC_SUP_FILE))
+        self.alc_chk.setAccessibleName(u"Алкоголь на склад при любом способе деления")
+        self.alc_chk.setChecked(self._sget("split_alc") == "1")
+        self.alc_chk.toggled.connect(lambda *_: self.on_alc())
+        c.lay.addWidget(self.alc_chk)
         self.bash_chk = QCheckBox(u"Заморозка Бащинского - одной партией на точку с холодильником")
         self.bash_chk.setToolTip(BASH_HELP)
         self.bash_chk.setAccessibleName(u"Заморозка Бащинского одной партией на точку")
@@ -205,8 +214,14 @@ class SplitPage(Page):
                              % self.core.CORR_DIR, "WARN")
             self.set_targets(None)
         else:
-            self.chk = self.core.corrected_check(fp)
-            self.sp_info.set(self.chk["text"], "OK" if self.chk["ok"] else "ERR")
+            v_ = self.core.validate_split_input(self.d, fp)
+            self.chk = v_["chk"] or self.core.corrected_check(fp)
+            if self.chk["ok"] and v_.get("fresh"):            # устарел: «Распределить» предложит свежий список
+                self.sp_info.set(u"Лист устарел - «Распределить» предложит свежий список", "WARN")
+                self.sp_info.setToolTip(v_["text"])
+            else:
+                self.sp_info.set(self.chk["text"], "OK" if self.chk["ok"] else "ERR")
+                self.sp_info.setToolTip(u"")
             self.set_targets(self.chk["shop"] if self.chk["ok"] else None)
         self.update_action()
 
@@ -333,6 +348,10 @@ class SplitPage(Page):
         self.rc_cb.setToolTip(u"Не действует: товар РЦ тоже едет на магазины" if on else u"")
         self.update_action()
 
+    def on_alc(self):
+        self._sset("split_alc", "1" if self.alc_chk.isChecked() else "0")
+        self.update_action()
+
     def on_how(self):
         h = self.how_val()
         self.top_sp.setEnabled(h == "top")
@@ -360,6 +379,7 @@ class SplitPage(Page):
                      "one": u"всё на %s" % self.one_cb.currentText()}[h]
             self.summary.setText(u"%s · %d поз. · %s%s" % (self.chk["shop"], self.chk["n"], how_t,
                                                            (u" · РЦ-товар на магазины" if self.rcs_cb.isChecked() else u"")
+                                                           + (u" · алкоголь на склад" if self.alc_chk.isChecked() else u"")
                                                            + (u" · заморозка Бащинского одной партией" if self.bash_chk.isChecked() else u"")))
         self.go_btn.setEnabled(not why and self.win.worker is None)
         self.go_btn.setToolTip(why or u"Файлы ТСД и Распределение.xlsx - в «ТСД_по_адресам» рядом со списком")
@@ -367,13 +387,26 @@ class SplitPage(Page):
     def go(self):
         core, fp = self.core, self.list_path()
         v_ = core.validate_split_input(self.d, fp)
+        if not v_["ok"] and v_.get("fresh"):              # лист устарел: подставить свежий список без правок, если человек согласен
+            if QMessageBox.question(self, u"Распределение", v_["text"] + u"\n\nВзять свежий список без правок и распределить его? "
+                                    u"Правки старого листа в него не переносятся.", QMessageBox.Yes | QMessageBox.No,
+                                    QMessageBox.Yes) != QMessageBox.Yes:
+                return
+            try:
+                fp = core.copy_list_as_is(self.d, v_["fresh"])
+            except Exception as e:
+                QMessageBox.critical(self, u"Распределение", u"Свежий список не взят: %s" % e)
+                return
+            self.win.journal(u"Список вывоза взят без правок (старый лист устарел)", u"%s\n->  %s" % (v_["fresh"], fp))
+            self.refresh_lists(select=fp)
+            v_ = core.validate_split_input(self.d, fp)
         if not v_["ok"]:
             (QMessageBox.information if v_["level"] == "info" else QMessageBox.warning)(self, u"Распределение", v_["text"])
             return
         chk, h = v_["chk"], self.how_val()
         n = core._clamp_top(self.top_sp.value())
-        rcs = self.rcs_cb.isChecked()
-        auto, skip = h == "auto", (not self.rc_cb.isChecked()) or rcs
+        rcs, alc = self.rcs_cb.isChecked(), self.alc_chk.isChecked()
+        auto, skip = h == "auto", ((not self.rc_cb.isChecked()) or rcs) and not alc   # алкоголь на склад - файл склада нужен
         one = self.one_cb.currentText().strip() if h == "one" else u""
         if h == "one" and not one:
             return
@@ -401,7 +434,7 @@ class SplitPage(Page):
             QTimer.singleShot(50, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
         self.win.run_task(label, lambda: core.run_split(self.d, fp, top_n=n, skip_rc=skip, auto_points=auto, target=one or None,
                                                 rc_to_shops=rcs, bash_freeze=self.bash_chk.isChecked(),
-                                                bash_point=self.bash_point()), done)
+                                                bash_point=self.bash_point(), alc_to_rc=alc), done)
 
     def open_info(self, key):
         v = (self.info or {}).get(key)

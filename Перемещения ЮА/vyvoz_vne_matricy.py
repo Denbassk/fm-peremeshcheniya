@@ -3340,12 +3340,15 @@ def _selftest_inv_check(ck):
 
 def _selftest_missed_ua(ck):
     """Пропуски ЮА: товар есть на складе ЮА / других точках ЮА, а переводимому магазину на ЮА не поставлен.
-    «Важно» - магазин этот товар у Фемели держит (строка в выгрузке, даже с нулём; по ШК, склейке или названию)."""
+    Магазин товар у Фемели держит (строка в выгрузке, даже с нулём; по ШК, склейке или названию): на складе ЮА остаток > 0 -
+    «Довезти со склада», иначе (только на точках) - «Нет на складе». Фемели не держит, на складе > 0 - «Возможно».
+    Нет остатка нигде - не в списке; точки с нулём в «Где есть» не пишутся."""
     tmp = tempfile.mkdtemp(prefix="vyvoz_miss_")
     try:
         d = Dirs(tmp)
         d.ensure()
         A, B, C, CF, Dd, E, EF, F, P, G = (_ean("48200800000%d" % i) for i in range(10))
+        H = _ean("482008000010")
         wb = Workbook()
         ws = wb.active
         ws["A1"], ws["A2"] = u"Состояние склада по всем центрам учета", u"Состояние склада"
@@ -3353,7 +3356,8 @@ def _selftest_missed_ua(ck):
         for i, (b, n, q, s) in enumerate(((A, u"Тов А", 5, u"Полевая-Склад ЮА"), (B, u"Тов Б", 0, u"Полевая-Склад ЮА"),
                                           (C, u"Тов В ЮА", 3, u"Тест 2 ЮА"), (Dd, u"Тов Г", 1, u"Тест 2 ЮА"),
                                           (Dd, u"Тов Г", 2, u"Тест 1 ЮА"), (P, u"Тов Произв", 4, u"Производство ЮА"),
-                                          (A, u"Тов А", 2, u"Тест 2 ЮА")), 1):
+                                          (A, u"Тов А", 2, u"Тест 2 ЮА"), (A, u"Тов А", 0, u"Тест 3 ЮА"),
+                                          (E, u"Тов Е", 2, u"Полевая-Склад ЮА"), (H, u"Тов З", 4, u"Полевая-Склад ЮА")), 1):
             ws.append([i, n, b, 1.0, q, u"шт", 10.0, s])
         wb.save(os.path.join(d.ua_base, u"База ЮА 27.10.2026.xlsx"))
         _write_receipts_xlsx(os.path.join(d.ua_receipts, u"ПРИХОДЫ_ТОВАРА 27.10.2026.xlsx"),
@@ -3367,15 +3371,18 @@ def _selftest_missed_ua(ck):
         info = run_missed_ua(d, u"Тест 1", recode_df=rec)
         ck(info["ok"], "пропуски ЮА: %s" % info["problems"])
         st = {r["key"]: r["st"] for r in info.get("rows", [])}
-        ck(st == {bc_key(A): MISS_IMP, bc_key(C): MISS_IMP, bc_key(E): MISS_IMP, bc_key(B): MISS_MAYBE},
-           "пропуски ЮА: что пропущено и важность (Г и Ф у магазина есть, производство не считаем): %s" % st)
+        ck(st == {bc_key(A): MISS_WH, bc_key(C): MISS_NOWH, bc_key(E): MISS_WH, bc_key(H): MISS_MAYBE},
+           "пропуски ЮА: что пропущено (Г и Ф у магазина есть, производство не считаем, Б без остатка нигде): %s" % st)
         fr = {r["key"]: r for r in info.get("rows", [])}
         ck(fr.get(bc_key(A), {}).get("fam_q") == 3.0 and fr.get(bc_key(A), {}).get("sup") == u"Поставщик А"
-           and fr.get(bc_key(A), {}).get("wh_q") == 5.0 and u"Тест 2 ЮА: 2" in fr.get(bc_key(A), {}).get("where", u""),
-           "пропуски ЮА: остаток Фемели, поставщик, склад ЮА, где ещё: %s" % fr.get(bc_key(A)))
+           and fr.get(bc_key(A), {}).get("wh_q") == 5.0 and fr.get(bc_key(A), {}).get("where") == u"Тест 2 ЮА: 2",
+           "пропуски ЮА: остаток Фемели, поставщик, склад ЮА, где ещё (без нулей): %s" % fr.get(bc_key(A)))
         ck(fr.get(bc_key(C), {}).get("fam_bc") == CF and fr.get(bc_key(E), {}).get("fam_bc") == EF,
            "пропуски ЮА: ШК Фемели по склейке и по названию: %s / %s" % (fr.get(bc_key(C)), fr.get(bc_key(E))))
-        ck(info.get("xlsx") and load_workbook(info["xlsx"]).sheetnames == [SHEET_MISS_IMP, SHEET_MISS_MAYBE, SHEET_MISS_SUM],
+        ck(info.get("stats", {}).get("wh_stock") == 3,
+           "пропуски ЮА: склад ЮА в наличии считается по остатку > 0: %s" % info.get("stats"))
+        ck(info.get("xlsx") and load_workbook(info["xlsx"]).sheetnames == [SHEET_MISS_WH, SHEET_MISS_NOWH, SHEET_MISS_MAYBE,
+                                                                           SHEET_MISS_SUM],
            "пропуски ЮА: xlsx и листы: %s" % info.get("xlsx"))
         ck(not run_missed_ua(d, u"Нет такого", recode_df=rec)["ok"], "пропуски ЮА: магазина нет среди выгрузок Family -> ошибка")
         pa = _parse_args(["--missed-ua", u"Тест 1"])
@@ -3657,6 +3664,18 @@ def _selftest_gui_logic(ck):
         shutil.copyfile(corr, alien)
         v3 = validate_split_input(d, alien)
         ck(not v3["ok"] and v3["level"] == "warn" and CORR_DIR in v3["text"], "validate_split_input: лист не из Корректировка_ЮА: %s" % v3)
+        # L6б: лист в Корректировка_ЮА старше свежего списка вывоза этого магазина - не распределять (28.10: Ньютона 102 ушёл
+        # старым листом на 335 поз. вместо 209)
+        auto_ = os.path.join(d.out, u"2026-10-08", rz.safe_name(u"Байрона 138/1"), rz.safe_name(u"Байрона 138/1") + u".xlsx")
+        _write_vyvoz_list_xlsx(auto_, u"Байрона 138/1", u"08.10.2026", [(_ean("482100600011"), u"Товар", 2, u"шт", 5.0, u"Пост")])
+        t0 = time.time()
+        os.utime(corr, (t0 - 3600, t0 - 3600))
+        os.utime(auto_, (t0 - 60, t0 - 60))
+        v4 = validate_split_input(d, corr)
+        ck(not v4["ok"] and v4["level"] == "warn" and u"устарел" in v4["text"],
+           "validate_split_input: лист старше свежего списка вывоза магазина -> не распределять: %s" % v4)
+        os.utime(corr, (t0, t0))
+        ck(validate_split_input(d, corr)["ok"], "validate_split_input: лист сохранён после списка вывоза -> ok")
         # L7: магазины для «весь вывоз на один магазин»
         ua_ = load_ua_stores(d)
         all_ = set(x for v_ in rz.ROUTES.values() for x in v_)
@@ -3896,13 +3915,15 @@ def _selftest_rc_to_shops(ck):
         d = Dirs(tmp)
         d.ensure()
         shop = u"Тест Источник"
-        RC1, D1 = _ean("482100500021"), _ean("482100500022")
+        RC1, D1, AL = _ean("482100500021"), _ean("482100500022"), _ean("482100500023")
         corr = os.path.join(tmp, CORR_DIR, u"Тест_рц.xlsx")
         _write_vyvoz_list_xlsx(corr, shop, u"22.10.2026", [(RC1, u"Товар РЦ", 12, u"шт", 5.0, u"Пост"),
-                                                           (D1, u"Прямой товар", 9, u"шт", 7.0, u"Пост")])
+                                                           (D1, u"Прямой товар", 9, u"шт", 7.0, u"Пост"),
+                                                           (AL, u"Горілка Тест 0,5л", 3, u"шт", 90.0, u"УДК")])
         g["fetch_route_history"] = lambda bcs, sh: {bc_key(b): ({"shop_rc": "2026-09-01", "shop_dir": "", "net_rc": "", "net_dir": "", "sup": "Пост"}
                                                                 if bc_key(b) == bc_key(RC1) else
-                                                                {"shop_rc": "", "shop_dir": "2026-09-01", "net_rc": "", "net_dir": "", "sup": "Пост"})
+                                                                {"shop_rc": "", "shop_dir": "2026-09-01", "net_rc": "", "net_dir": "",
+                                                                 "sup": u"УДК" if bc_key(b) == bc_key(AL) else "Пост"})
                                                     for b in bcs}
         g["pick_top_shops"] = lambda ua_stores, n=SPLIT_TOP_N, days=SPLIT_DAYS_SHOP: pd.DataFrame(
             {"store": [u"Точка А", u"Точка Б"], "rev": [300.0, 200.0]}).head(n)
@@ -3922,6 +3943,16 @@ def _selftest_rc_to_shops(ck):
            "РЦ-товар на магазины: количество по ШК сошлось: %s" % tot1)
         ck(any(u"РЦ" in str(w_) and u"магазин" in str(w_) for w_ in i1.get("routes", pd.DataFrame({"why": []}))["why"]),
            "РЦ-товар на магазины: причина маршрута в листе")
+        # алкоголь на Полевую (настройка 28.10.2026): поставщики из Справочник\vyvoz_alcohol_suppliers.csv - на склад при любом
+        # режиме, даже «весь товар на магазины» и «всё на один магазин»; остальное как обычно
+        i2 = run_split(d, corr, ref=ref0, top_n=2, rc_to_shops=True, target=u"Точка Б", alc_to_rc=True)
+        a2 = i2.get("alloc", pd.DataFrame(columns=["addr", "bc", "qty"]))
+        ck(i2.get("ok") and list(a2.loc[a2["addr"] == SPLIT_RC_NAME, "bc"]) == [AL]
+           and set(a2.loc[a2["addr"] == u"Точка Б", "bc"]) == {RC1, D1},
+           "алкоголь на Полевую: только алкоголь на склад, остальное на магазин: %s %s" % (a2.to_dict("records"), i2.get("problems")))
+        i3 = run_split(d, corr, ref=ref0, top_n=2, rc_to_shops=True, target=u"Точка Б")
+        a3 = i3.get("alloc", pd.DataFrame(columns=["addr", "bc", "qty"]))
+        ck(i3.get("ok") and SPLIT_RC_NAME not in set(a3["addr"]), "без настройки алкоголь едет вместе со всем: %s" % a3.to_dict("records"))
     finally:
         g["fetch_route_history"], g["pick_top_shops"], g["fetch_bc_sales"] = saved
         shutil.rmtree(tmp, ignore_errors=True)
@@ -4969,6 +5000,22 @@ def ua_stores_not_found(names, bq_stores):
     return [n for n in names if _skey(n) not in have and not _is_polevaya(n) and not rz.norm(n).endswith(u" юа")]
 
 
+ALC_SUP_FILE = u"vyvoz_alcohol_suppliers.csv"
+DEFAULT_ALC_SUP = [   # решение 28.10.2026: группа «АЛКОГОЛЬ» Торгсофта; имена - как в матрице и приходах
+    (u"УДК", u""), (u"Немирів", u"в т.ч. Шабо"), (u"Арсенал", u"Азнаурі"), (u"Арсенал (Зубровка)", u""),
+    (u"Арсенал (Азнаурі)", u""), (u"Хлібний Дар", u""), (u"Хлібний Дар (Еліт)", u""), (u"Медоф", u""), (u"Грин Дей", u""),
+    (u"ДДС+", u""), (u"Дісна", u""), (u"Злагода", u"не «Злагода Бакалея»"), (u"Прайм", u""), (u"Ресурс", u""),
+    (u"Свіфт(Алкоголь)", u""),
+]
+
+
+def load_alc_suppliers(dirs):
+    """Поставщики алкоголя для настройки «Алкоголь на Полевую». Справочник\\vyvoz_alcohol_suppliers.csv -> {sup_norm}.
+    Совпадение по имени целиком: «Арсенал ПК( Шейк)» и «Злагода Бакалея» сюда не попадают."""
+    df = _csv_default(dirs, ALC_SUP_FILE, DEFAULT_ALC_SUP, [u"Поставщик", u"Комментарий"])
+    return set(sup_norm(s) for s in df.iloc[:, 0] if sup_norm(s))
+
+
 def load_route_suppliers(dirs):
     """Поставщик -> «РЦ» | «Точки» (перекрывает историю). Справочник\\vyvoz_route_suppliers.csv -> {sup_norm: вид}"""
     df = _csv_default(dirs, ROUTE_SUP_FILE, DEFAULT_ROUTE_SUP, [u"Поставщик", u"Куда (РЦ или Точки)", u"Комментарий"])
@@ -5360,8 +5407,9 @@ def dovyvoz_route(kind, why, key, sold_keys, ref):
 
 def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=False, auto_points=False, per_shop=(5000.0, 7000.0),
               target=None, dovyvoz=False, points=None, min_sum=None, kegs=True, exclude=None, dv=None, rc_to_shops=False,
-              bash_freeze=False, bash_point=None):
+              bash_freeze=False, bash_point=None, alc_to_rc=False):
     """Исправленный лист вывоза -> txt для ТСД по адресам + xlsx для проверки. -> dict(ok, out_dir, files, problems, summary)
+    alc_to_rc - настройка «Алкоголь на Полевую»: поставщики алкоголя (load_alc_suppliers) едут на склад при любом режиме.
     Точки - по спросу на товары ЭТОГО списка (решение владельца 09.10.2026), не меньше per_shop[0] грн на точку в обоих режимах.
     target - «весь вывоз на один магазин»: всё, что обычно делится по точкам (прямые поставки, кеги), едет на этот магазин;
     товар РЦ - как обычно на Полевая-Склад (решение 14.10.2026). Плюс оценка продаж за EFF_DAYS дней на нём и сравнение со
@@ -5490,6 +5538,14 @@ def run_split(dirs, path, shop=None, day=None, ref=None, top_n=None, skip_rc=Fal
         if n_rc0:
             info["notes"] = list(info.get("notes") or []) + [
                 u"Весь товар на магазины: товар РЦ (%d поз.) тоже делится по точкам по спросу, на %s ничего не едет" % (n_rc0, SPLIT_RC_NAME)]
+    if alc_to_rc and not dovyvoz:                       # настройка окна: алкоголь - на склад при любом режиме (28.10.2026)
+        alc_ = load_alc_suppliers(dirs)
+        is_alc = [sup_norm(s_) in alc_ for s_ in lst["sup"]]
+        lst["why"] = [(u"алкоголь на %s (настройка): %s" % (SPLIT_RC_NAME, s_)) if a_ else w_
+                      for a_, s_, w_ in zip(is_alc, lst["sup"], lst["why"])]
+        lst["kind"] = [KIND_RC if a_ else k_ for a_, k_ in zip(is_alc, lst["kind"])]
+        info["notes"] = list(info.get("notes") or []) + [
+            u"Алкоголь на %s: %d поз. (поставщики из Справочник\\%s)" % (SPLIT_RC_NAME, sum(is_alc), ALC_SUP_FILE)]
     force, _fl = {}, None
     if dovyvoz:                                         # Бащинский и кофеаппарат - одной партией на одну точку; пакеты - не на склад
         _fl = dovyvoz_force(lst, ref, load_dovyvoz_rules(dirs), dv or {})
@@ -5804,7 +5860,7 @@ def _parse_args(argv):
          "excl": [], "incl": [], "split": None, "day": None, "top": None, "with_rc": False, "no_rc": False, "update": None,
          "state": [], "shop_ua": [], "final": None, "final_file": None, "sweep": False, "auto_points": False, "map_list": False, "map_import": None, "manual": False, "to_shop": None,
          "qt": False, "tk": False, "all_out": False, "rc_to_shops": False, "bash": False, "check_inv": None, "check_txt": [], "check_ua": None, "check_fam": None,
-         "missed_ua": None}
+         "missed_ua": None, "alc": False}
     it = iter(argv)
     for x in it:
         t = x.lower().lstrip("-/")
@@ -5838,6 +5894,8 @@ def _parse_args(argv):
             a["bash"] = True
         elif t in ("rc-to-shops", "all-to-shops"):  # распределение: весь товар на магазины, РЦ-товар тоже
             a["rc_to_shops"] = True
+        elif t in ("alc-to-rc", "alcohol"):      # распределение: алкоголь на Полевую-Склад при любом режиме
+            a["alc"] = True
         elif t in ("all-out", "take-all"):        # вывезти ВСЁ: все правила отключены, лишнее человек удаляет в Excel
             a["all_out"] = True
         elif t == "map-list":                     # список кандидатов для таблицы соответствия ШК Family <-> ЮА (Excel)
@@ -7407,12 +7465,16 @@ def run_inv_check(dirs, shop, txt_paths=None, ua_path=None, fam_path=None, recod
 # ============ ПРОПУСКИ ЮА: что есть на ЮА, а переводимому магазину на ЮА не поставлено ============
 # Зачем (решение 28.10.2026): закупщицы заказывают на ЮА по каждому магазину отдельно и могут пропустить позицию. Список -
 # товар, который уже пришёл на склад ЮА или на другие точки ЮА, но у переводимого магазина на ЮА нет ни прихода, ни карточки.
-# «Важно» - магазин этот товар у Фемели держит (строка в выгрузке, даже с нулём); «Возможно» - остальное. Запуск в любой день.
+# Магазин товар у Фемели держит (строка в выгрузке, даже с нулём): на складе ЮА остаток > 0 - «Довезти со склада» (готовый
+# список довоза), только на точках - «Нет на складе». Фемели не держит, на складе > 0 - «Возможно». Без остатка нигде - не в
+# списке (решение 28.10.2026: старые нулевые карточки базы - шум). Запуск в любой день.
 
 MISS_PREFIX = u"Пропуски_ЮА_"
-MISS_IMP = u"Важно"
+MISS_WH = u"Довезти"
+MISS_NOWH = u"Нет на складе"
 MISS_MAYBE = u"Возможно"
-SHEET_MISS_IMP = u"Важно - у Фемели есть"
+SHEET_MISS_WH = u"Довезти со склада ЮА"
+SHEET_MISS_NOWH = u"Нет на складе ЮА"
 SHEET_MISS_MAYBE = u"Возможно"
 SHEET_MISS_SUM = u"Итог"
 MISS_SKIP_POINTS = (u"производство",)            # внутренние точки ЮА: их товар - не ассортимент магазина
@@ -7546,21 +7608,34 @@ def run_missed_ua(dirs, shop, fam_path=None, recode_df=None, day=None):
         if g & have:
             continue
         fks = [x for x in g if x in fam_q]
-        where = sorted((s, q) for s, q in pool[k].items() if not _is_polevaya(s))
+        where = sorted((s, q) for s, q in pool[k].items() if not _is_polevaya(s) and q > 0)
+        wq = wh_q.get(k) or 0.0
+        if fks:
+            stv = MISS_WH if wq > 0 else (MISS_NOWH if where else None)
+        else:
+            stv = MISS_MAYBE if wq > 0 else None
+        if stv is None:                           # остатка нет ни на складе, ни на точках (или Фемели не держит и только точки)
+            continue
         rows.append({"key": k, "bc": ua_bcs.get(k) or rz.restore_barcode(rz.fmt_barcode(k))[0], "name": names.get(k, u""),
-                     "st": MISS_IMP if fks else MISS_MAYBE,
+                     "st": stv,
                      "sup": sup.get(k) or next((m_sup[x] for x in g if x in m_sup), u""),
-                     "wh_q": wh_q.get(k), "pts": sum(1 for _s, q in where if q > 0),
+                     "wh_q": wh_q.get(k), "pts": len(where),
                      "where": u"; ".join(u"%s: %s" % (s, (u"%.3f" % q).rstrip(u"0").rstrip(u".") or u"0") for s, q in where),
                      "fam_bc": fam_bc[fks[0]] if fks else u"", "fam_q": round(sum(fam_q[x] for x in fks), 3) if fks else None})
-    rows.sort(key=lambda r: (r["st"] != MISS_IMP, sup_norm(r["sup"]) or u"￿", nname(r["name"])))
+    order = (MISS_WH, MISS_NOWH, MISS_MAYBE)
+    rows.sort(key=lambda r: (order.index(r["st"]), sup_norm(r["sup"]) or u"￿", nname(r["name"])))
     info["rows"] = rows
-    n_imp = sum(1 for r in rows if r["st"] == MISS_IMP)
-    info["stats"] = {"imp": n_imp, "maybe": len(rows) - n_imp, "have": len(have), "pool": len(pool)}
-    info["summary"] = [(u"Ассортимент ЮА (склад и другие точки), ШК", len(pool)),
+    n = {s: sum(1 for r in rows if r["st"] == s) for s in order}
+    wh_all = sum(1 for k in wh_q)
+    wh_stock = sum(1 for q in wh_q.values() if q > 0)
+    info["stats"] = {"wh": n[MISS_WH], "nowh": n[MISS_NOWH], "maybe": n[MISS_MAYBE], "have": len(have), "pool": len(pool),
+                     "wh_all": wh_all, "wh_stock": wh_stock}
+    info["summary"] = [(u"Склад ЮА: весь товар, ШК", wh_all),
+                       (u"Склад ЮА: в наличии, ШК", wh_stock),
                        (u"У магазина на ЮА уже есть, ШК", len(have)),
-                       (u"Пропущено: важно (у Фемели магазин держит)", n_imp),
-                       (u"Пропущено: возможно", len(rows) - n_imp)]
+                       (u"Довезти со склада ЮА (у Фемели магазин держит)", n[MISS_WH]),
+                       (u"Нет на складе ЮА, есть только на точках", n[MISS_NOWH]),
+                       (u"Возможно (у Фемели нет, на складе ЮА есть)", n[MISS_MAYBE])]
     # ---- Excel ----
     day = day or date.today()
     nm = rz.safe_name(shop)
@@ -7570,7 +7645,7 @@ def run_missed_ua(dirs, shop, fam_path=None, recode_df=None, day=None):
     wb = Workbook()
     hdr = [u"ШК ЮА", u"Название товара", u"Поставщик", u"Остаток склад ЮА", u"Точек ЮА с остатком", u"Где есть на ЮА",
            u"ШК Фемели", u"Остаток Фемели"]
-    for i, (title, stv) in enumerate(((SHEET_MISS_IMP, MISS_IMP), (SHEET_MISS_MAYBE, MISS_MAYBE))):
+    for i, (title, stv) in enumerate(((SHEET_MISS_WH, MISS_WH), (SHEET_MISS_NOWH, MISS_NOWH), (SHEET_MISS_MAYBE, MISS_MAYBE))):
         ws = wb.active if i == 0 else wb.create_sheet(title)
         ws.title = title
         ws.append(hdr)
@@ -8151,6 +8226,17 @@ def validate_split_input(dirs, path):
     chk = corrected_check(path)
     if not chk["ok"]:
         return {"ok": False, "level": "warn", "chk": chk, "text": chk["text"]}
+    # список вывоза магазина пересобран после того, как лист сохранили в Корректировка_ЮА: лист устарел (на ЮА с тех пор
+    # могли поставить товар, остаток изменился). 28.10.2026: Ньютона 102 распределён старым листом - 335 поз. вместо 209.
+    k_ = _skey(rz.safe_name(chk["shop"]))
+    newer = [fp for _l, fp in auto_lists(dirs, limit=100)
+             if _skey(os.path.basename(os.path.dirname(fp))) == k_ and _mtime(fp) > _mtime(path)]
+    if newer:
+        ts = lambda p_: datetime.fromtimestamp(_mtime(p_)).strftime("%d.%m %H:%M")
+        return {"ok": False, "level": "warn", "chk": chk, "fresh": newer[0],
+                "text": u"Лист устарел: список вывоза «%s» пересобран %s, а этот лист сохранён %s. Возьмите свежий список "
+                        u"(«Взять без правок») или перенесите правки в него и сохраните в «%s»."
+                        % (chk["shop"], ts(newer[0]), ts(path), CORR_DIR)}
     return {"ok": True, "level": "", "chk": chk, "text": chk["text"]}
 
 
@@ -9712,7 +9798,7 @@ def main(argv=None):
     if args["split"]:
         info = run_split(DIRS, args["split"], shop=(args["shops"] or [None])[0], day=args["day"], top_n=args["top"], skip_rc=args["no_rc"],
                          auto_points=args["auto_points"], target=args["to_shop"], rc_to_shops=args["rc_to_shops"],
-                         bash_freeze=args["bash"])
+                         bash_freeze=args["bash"], alc_to_rc=args["alc"])
         print(_split_text(info))
         return 0 if info.get("ok") else 2
     if args["map_list"]:
