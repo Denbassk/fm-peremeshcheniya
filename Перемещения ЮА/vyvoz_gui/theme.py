@@ -122,6 +122,10 @@ QTableView {{ background: {c['surface']}; alternate-background-color: {c['surfac
 QTableView::item {{ padding: 0 {T.SPACING_SM}px; border: none; }}
 QTableView::item:selected {{ background: {c['selection_bg']}; color: {c['selection_text']}; }}
 QTableView:focus {{ border: 2px solid {c['focus']}; }}
+QTableView::indicator {{ width: 16px; height: 16px; border: 2px solid {c['outline']}; border-radius: {T.RADIUS_SM}px;
+    background: {c['surface']}; }}
+QTableView::indicator:checked {{ background: {c['checked']}; border-color: {c['checked']}; image: url("{check_png}"); }}
+QTableView::indicator:hover {{ border-color: {c['focus']}; }}
 QHeaderView::section {{ background: {c['surface_low']}; color: {c['text_muted']}; border: none;
     border-bottom: 1px solid {c['outline_variant']}; padding: {T.SPACING_XS + 2}px {T.SPACING_SM}px;
     font-size: {T.TYPO_LABEL_MD[0]}px; font-weight: 600; }}

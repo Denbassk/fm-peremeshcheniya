@@ -17,7 +17,8 @@ from .worker import Worker
 
 # Меню по группам (решение владельца 14.10.2026): номеров нет, порядок - внутри группы «Сегодня»
 NAV = (
-    (u"СЕГОДНЯ", (("vyvoz", u"Списки вывоза", "local_shipping"), ("split", u"Распределение", "call_split"))),
+    (u"СЕГОДНЯ", (("vyvoz", u"Списки вывоза", "local_shipping"), ("split", u"Распределение", "call_split"),
+                  ("nakl", u"Сверка накладной", "task_alt"))),
     (u"ОТДЕЛЬНО", (("fin", u"Инвентаризация ЮА", "inventory"),)),
     (None, (("serv", u"Сервис", "settings"), ("log", u"Журнал", "receipt_long"))),
 )
@@ -404,14 +405,15 @@ class MainWindow(QMainWindow):
         h.addLayout(right, 1)
 
         from .page_fin import FinPage
+        from .page_nakl import NaklPage
         from .page_split import SplitPage
         from .page_vyvoz import VyvozPage
         self.log = JournalPage(core, self)
-        self.pages = {"vyvoz": VyvozPage(core, self), "split": SplitPage(core, self),
+        self.pages = {"vyvoz": VyvozPage(core, self), "split": SplitPage(core, self), "nakl": NaklPage(core, self),
                       "fin": FinPage(core, self), "serv": ServicePage(core, self), "log": self.log}
         for p in self.pages.values():
             self.stack.addWidget(p)
-        for i, key in enumerate(("vyvoz", "split", "fin", "serv", "log"), 1):
+        for i, key in enumerate(("vyvoz", "split", "nakl", "fin", "serv", "log"), 1):
             QShortcut(QKeySequence("Ctrl+%d" % i), self, activated=lambda k=key: self.show_page(k))
         self.show_page("vyvoz")
 

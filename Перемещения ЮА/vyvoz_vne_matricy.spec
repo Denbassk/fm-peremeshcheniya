@@ -46,9 +46,10 @@ hiddenimports += [
     "raschet_zakaza",
     "tkinter",
     "tkinter.ttk",
-    "vyvoz_gui", "vyvoz_gui.app", "vyvoz_gui.page_vyvoz", "vyvoz_gui.page_split", "vyvoz_gui.page_fin", "vyvoz_gui.suppliers", "vyvoz_gui.razkompl", "vyvoz_gui.widgets",
+    "vyvoz_gui", "vyvoz_gui.app", "vyvoz_gui.page_vyvoz", "vyvoz_gui.page_split", "vyvoz_gui.page_nakl", "vyvoz_gui.page_fin", "vyvoz_gui.suppliers", "vyvoz_gui.razkompl", "vyvoz_gui.widgets",
     "vyvoz_gui.theme", "vyvoz_gui.tokens", "vyvoz_gui.assets", "vyvoz_gui.worker",
     "openpyxl.cell._writer",
+    "xlrd",                       # накладная перемещения из Торгсофта - старый .xls (Сверка накладной)
     "pandas._libs.tslibs.base",
     "google.cloud.bigquery_storage",
 ]

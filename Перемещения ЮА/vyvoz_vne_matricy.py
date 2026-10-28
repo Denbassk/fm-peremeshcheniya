@@ -3139,6 +3139,7 @@ def _self_test_body(gui=False):
     _selftest_ua_base(ck)
     _selftest_inv_check(ck)
     _selftest_missed_ua(ck)
+    _selftest_waybill(ck)
 
     reset_report()
     if fails:
@@ -3383,6 +3384,71 @@ def _selftest_missed_ua(ck):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _write_waybill_xlsx(path, sender, receiver, rows, total=True):
+    """Синтетическая «Накладная внутреннего перемещения» Торгсофта: шапка, ШК и числа текстом (как в .xls), «Итого:»."""
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = u"Накладная внутреннего перемещения №85 от"
+    ws["A2"], ws["E2"] = u"Поставщик:", sender
+    ws["A3"], ws["E3"] = u"Получатель:", receiver
+    for col, h in zip("AHJKMO", (u"Название товара", u"Штрих код", u"Кол-во", u"Цена закуп.", u"Цена роз.", u"Сумма розн.")):
+        ws[col + "5"] = h
+    r, tq, ts = 6, 0.0, 0.0
+    for i, (bc, name, qty, price) in enumerate(rows):
+        if i == 2:                                   # на новой печатной странице Торгсофт повторяет заголовок
+            for col, h in zip("AHJKMO", (u"Название товара", u"Штрих код", u"Кол-во", u"Цена закуп.", u"Цена роз.", u"Сумма розн.")):
+                ws["%s%d" % (col, r)] = h
+            r += 1
+        for col, v in zip("AHJKMO", (name, bc, qty, u"1,00", price, u"")):
+            ws["%s%d" % (col, r)] = v
+        q, p = float(qty.replace(",", ".")), float(price.replace(",", ".").replace(u"\xa0", u""))
+        ws["O%d" % r] = (u"%.2f" % (q * p)).replace(".", ",")
+        tq, ts, r = tq + q, ts + round(q * p, 2), r + 1
+    if total:
+        ws["A%d" % r], ws["J%d" % r], ws["O%d" % r] = u"Итого:", (u"%g" % tq).replace(".", ","), (u"%.2f" % ts).replace(".", ",")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    wb.save(path)
+
+
+def _selftest_waybill(ck):
+    """Сверка накладной: чтение (ШК текстом, дробь с запятой, «Итого:»), новый ТСД из оставленных строк с фактическим
+    количеством, протокол «едет / убрано / изменено»."""
+    tmp = tempfile.mkdtemp(prefix="vyvoz_wb_")
+    try:
+        d = Dirs(tmp)
+        d.ensure()
+        A, B, C, Dd = _ean("482009000001"), "20112652692", _ean("482009000003"), _ean("482009000004")
+        p = os.path.join(tmp, u"накладная.xlsx")
+        _write_waybill_xlsx(p, u"Тест 1", u"Тест 2", [(A, u"Тов А", u"3", u"29,50"), (B, u"Тов Б вес", u"0,305", u"1\xa0011,00"),
+                                                    (C, u"Тов В", u"16", u"32,60"), (Dd, u"Тов Г", u"2", u"10,00")])
+        wbi = read_waybill(p)
+        ck(wbi["ok"] and wbi["sender"] == u"Тест 1" and wbi["receiver"] == u"Тест 2" and len(wbi["rows"]) == 4,
+           "накладная: шапка и строки: %s %s" % (wbi.get("problems"), wbi.get("sender")))
+        ck([r["bc"] for r in wbi["rows"]] == [A, B, C, Dd] and wbi["rows"][1]["qty"] == 0.305 and wbi["rows"][1]["price"] == 1011.0,
+           "накладная: ШК без потери нулей, дробь и пробел в числе: %s" % wbi["rows"][1:2])
+        p2 = os.path.join(tmp, u"накладная2.xlsx")
+        _write_waybill_xlsx(p2, u"Тест 1", u"Тест 2", [(A, u"Тов А", u"3", u"29,50")])
+        wb_ = load_workbook(p2)
+        wb_.active["J7"] = u"5"                      # «Итого» не сходится со строками
+        wb_.save(p2)
+        ck(not read_waybill(p2)["ok"], "накладная: «Итого» не сошлось со строками -> ошибка")
+        # оставить А (3 из 3), Б весовой 0,2 вместо 0,305, убрать В, Г - количество 0 = убрать
+        out = write_waybill_tsd(d, wbi, [(True, 3), (True, 0.2), (False, 16), (True, 0)])
+        ck(out["ok"], "новый ТСД: %s" % out.get("problems"))
+        txt = open(out["txt"], "rb").read().decode("cp1251") if out.get("txt") else u""
+        ck(txt == u"%s;3\r\n%s;0.2\r\n" % (A, B), "новый ТСД: оставленные строки, факт, cp1251 и \\r\\n: %r" % txt)
+        ck(os.path.basename(out.get("txt", u"")) == u"Тест 2.txt" and os.path.basename(os.path.dirname(os.path.dirname(out["txt"]))) == u"Тест 1",
+           "новый ТСД: ВЫВОЗ\\<день>\\<отправитель>\\Сверка_накладной_*\\<получатель>.txt: %s" % out.get("txt"))
+        ck(out["stats"]["keep"] == 2 and out["stats"]["removed"] == 2 and out["stats"]["changed"] == 1,
+           "новый ТСД: счёт едет / убрано / изменено: %s" % out["stats"])
+        ck(out.get("xlsx") and load_workbook(out["xlsx"]).sheetnames == [SHEET_WB_SUM, SHEET_WB_KEEP, SHEET_WB_DEL, SHEET_WB_CHG],
+           "новый ТСД: протокол xlsx: %s" % out.get("xlsx"))
+        ck(not write_waybill_tsd(d, wbi, [(False, 0)] * 4)["ok"], "новый ТСД: ничего не оставлено -> ошибка, файл не пишется")
+        ck(not write_waybill_tsd(d, wbi, [(True, 1)])["ok"], "новый ТСД: решений меньше, чем строк -> ошибка")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _selftest_sweep(ck):
     """Зачистка остатка: что вывозится, что остаётся; число точек по сумме на точку."""
     ck(auto_top_n(29000) == 5 and auto_top_n(12000) == 2 and auto_top_n(3000) == 1 and auto_top_n(100000) == SPLIT_TOP_N
@@ -3505,7 +3571,21 @@ def _selftest_qt_window(ck, d):
         res_ = qt_app.run(sys.modules[__name__], dirs=d, test_mode=True,
                           settings=QSettings(os.path.join(d.base, "ui_test.ini"), QSettings.IniFormat))
         keys = res_["keys"]
-        ck(set(keys) == {"vyvoz", "split", "fin", "serv", "log"}, "окно PySide6: экраны %s" % (keys,))
+        ck(set(keys) == {"vyvoz", "split", "nakl", "fin", "serv", "log"}, "окно PySide6: экраны %s" % (keys,))
+        from PySide6.QtCore import Qt as QtC
+        from vyvoz_gui.page_nakl import WaybillModel          # сверка накладной: галочка «едет» и факт
+        m_ = WaybillModel()
+        m_.set_rows([{"bc": "4820000000011", "name": u"А", "qty": 3.0, "price": 10.0, "sum": 30.0, "bad": False},
+                     {"bc": "4820000000028", "name": u"Б", "qty": 0.305, "price": 100.0, "sum": 30.5, "bad": False},
+                     {"bc": "4820000000035", "name": u"В", "qty": 2.0, "price": 5.0, "sum": 10.0, "bad": False}])
+        c_go, c_f = m_.COL_GO, m_.COL_FACT
+        m_.setData(m_.index(1, c_f), u"0,2")                  # запятая как в Торгсофте
+        m_.setData(m_.index(2, c_go), QtC.Unchecked, QtC.CheckStateRole)
+        m_.setData(m_.index(0, c_f), u"0")                    # 0 = убрать
+        ck(m_.decisions() == [(False, 0.0), (True, 0.2), (False, 2.0)] and m_.counts()["keep"] == 1 and m_.counts()["changed"] == 1,
+           "окно: модель накладной - факт, галочка, ноль снимает галочку: %s %s" % (m_.decisions(), m_.counts()))
+        m_.set_all(True)
+        ck(m_.decisions() == [(True, 3.0), (True, 0.2), (True, 2.0)], "окно: «Отметить все» (факт 0 -> как в накладной): %s" % m_.decisions())
         ck(res_["targets"] == res_["targets_want"] and res_["targets"],
            "окно PySide6: «Всё на один магазин» = split_targets: %s" % (res_["targets"][:3],))
         ck(u"хинтинг полный" in res_["font"], "окно PySide6: %s" % res_["font"])
@@ -3595,7 +3675,7 @@ def _selftest_gui_logic(ck):
         ck(sc_["found"] == {} and isinstance(sc_["inputs"], list) and sc_["inputs"] and isinstance(sc_["errors"], list),
            "scan_inputs: пустая папка -> пусто, строки «Шаг 1» есть")
         # L11: тексты разделов
-        ck(set(UI_PAGES) == {"vyvoz", "split", "upd", "fin", "serv", "log", "dv"} and all(len(v_) == 2 for v_ in UI_PAGES.values()), "UI_PAGES")
+        ck(set(UI_PAGES) == {"vyvoz", "split", "nakl", "upd", "fin", "serv", "log", "dv"} and all(len(v_) == 2 for v_ in UI_PAGES.values()), "UI_PAGES")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -7531,6 +7611,185 @@ def _missed_text(info):
     return u"\n".join(L)
 
 
+# ============ СВЕРКА НАКЛАДНОЙ ПЕРЕМЕЩЕНИЯ: что уехало остаётся, что осталось на магазине - убирается ============
+# Зачем (решение 28.10.2026): накладная Торгсофта уже проведена, а часть товара физически осталась на магазине (её переводят
+# на ЮА). Накладную удаляют, новую создают из ТСД: в нём только оставленные строки с фактическим количеством.
+
+WB_PREFIX = u"Сверка_накладной_"
+SHEET_WB_SUM = u"Итог"
+SHEET_WB_KEEP = u"Едет"
+SHEET_WB_DEL = u"Убрано - остаётся"
+SHEET_WB_CHG = u"Изменено количество"
+WB_ORDER_NOTE = (u"Порядок: удалить старую накладную в Торгсофте -> загрузить этот ТСД и провести новую -> снять свежую "
+                 u"выгрузку Family -> «Инвентаризация ЮА». Пока старая накладная проведена, убранного товара в остатке нет.")
+
+
+def _wb_num(v):
+    """Число из накладной: «1 848,00» (неразрывный пробел, запятая) -> 1848.0; пусто -> None."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = re.sub(u"[\\s\xa0]", u"", str(v)).replace(u",", u".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def read_waybill(path):
+    """Накладная внутреннего перемещения (.xls/.xlsx Торгсофта) -> dict(ok, problems, title, sender, receiver, rows, tot_qty,
+    tot_sum). rows: i, bc, key, name, qty, price, sum. Строки «Итого:» сверяются с суммой строк."""
+    info = {"ok": False, "problems": [], "title": u"", "sender": u"", "receiver": u"", "rows": [], "tot_qty": 0.0, "tot_sum": 0.0,
+            "path": path}
+    P = info["problems"]
+    try:
+        raw = pd.read_excel(path, sheet_name=0, header=None, dtype=object)
+    except Exception as e:
+        P.append(u"Накладная не прочитана: %s: %s" % (type(e).__name__, e))
+        return info
+    hi = _find_header(raw, [("штрих",), ("назв", "наимен"), ("кол",)])
+    if hi is None:
+        P.append(u"В файле не найдена строка заголовков (Название товара / Штрих код / Кол-во)")
+        return info
+    for i in range(hi):                       # шапка: «Поставщик: <магазин>», «Получатель: <магазин>»
+        vals = [str(v).strip() for v in raw.iloc[i].tolist() if pd.notna(v) and str(v).strip()]
+        if not vals:
+            continue
+        lab = rz.norm(vals[0])
+        if lab.startswith((u"поставщик", u"отправитель", u"постачальник", u"відправник")) and len(vals) > 1:
+            info["sender"] = vals[1]
+        elif lab.startswith((u"получатель", u"отримувач")) and len(vals) > 1:
+            info["receiver"] = vals[1]
+        elif not info["title"]:
+            info["title"] = vals[0]
+    hdr = [rz.norm(v) if pd.notna(v) else u"" for v in raw.iloc[hi].tolist()]
+
+    def col(*keys):
+        return next((j for j, h in enumerate(hdr) if h and any(k in h for k in keys)), None)
+    c_nm, c_bc, c_q = col(u"назв", u"наимен"), col(u"штрих"), col(u"кол")
+    c_pr, c_sum = col(u"цена роз", u"ціна роз"), col(u"сумма", u"сума")
+    totals = None
+    for i in range(hi + 1, len(raw)):
+        row = raw.iloc[i].tolist()
+        nm = str(row[c_nm]).strip() if c_nm is not None and pd.notna(row[c_nm]) else u""
+        if rz.norm(nm).startswith((u"итого", u"разом", u"всего")):
+            totals = (_wb_num(row[c_q]), _wb_num(row[c_sum]) if c_sum is not None else None)
+            break
+        b = row[c_bc]
+        if b is None or (isinstance(b, float) and pd.isna(b)) or not str(b).strip():
+            continue
+        bc = str(b).strip()
+        if u"штрих" in rz.norm(bc):                              # заголовок повторяется на каждой печатной странице
+            continue
+        bc = bc[:-2] if re.match(r"^\d+\.0$", bc) else bc       # ШК числом в xlsx -> без «.0»
+        q = _wb_num(row[c_q])
+        if q is None:
+            P.append(u"Строка %d (%s): нет количества" % (i + 1, nm))
+            continue
+        pr = _wb_num(row[c_pr]) if c_pr is not None else None
+        sm = _wb_num(row[c_sum]) if c_sum is not None else None
+        info["rows"].append({"i": len(info["rows"]), "bc": bc, "key": bc_key(bc), "name": nm, "qty": round(q, 3),
+                             "price": pr, "sum": sm if sm is not None else round(q * (pr or 0.0), 2),
+                             "bad": not RE_BC_OK.match(bc)})
+    if not info["rows"]:
+        P.append(u"В накладной нет строк с ШК")
+        return info
+    info["tot_qty"] = round(sum(r["qty"] for r in info["rows"]), 3)
+    info["tot_sum"] = round(sum(r["sum"] or 0.0 for r in info["rows"]), 2)
+    if totals and totals[0] is not None and abs(totals[0] - info["tot_qty"]) > 0.001:
+        P.append(u"«Итого» в накладной %s ед., по строкам %s: часть строк не прочитана" % (totals[0], info["tot_qty"]))
+    if totals and totals[1] is not None and abs(totals[1] - info["tot_sum"]) > 0.05:
+        P.append(u"«Итого» в накладной %.2f грн, по строкам %.2f: часть строк не прочитана" % (totals[1], info["tot_sum"]))
+    bad = [r["bc"] for r in info["rows"] if r["bad"]]
+    if bad:
+        info["bad"] = bad                       # не ошибка чтения: такие строки в ТСД не попадут, окно их покажет
+    info["ok"] = not P
+    return info
+
+
+def write_waybill_tsd(dirs, wbi, decisions, day=None):
+    """Новый ТСД по накладной: decisions - по строке накладной (едет: bool, факт: число). Едет и факт > 0 - в txt
+    (ШК;количество, cp1251, \\r\\n; одинаковые ШК складываются); остальное - «убрано, остаётся на магазине».
+    -> dict(ok, problems, out_dir, txt, xlsx, stats)"""
+    out = {"ok": False, "problems": [], "out_dir": u"", "txt": u"", "xlsx": u"", "stats": {}}
+    P = out["problems"]
+    rows = wbi.get("rows", [])
+    if len(decisions) != len(rows):
+        P.append(u"Решений %d, строк в накладной %d" % (len(decisions), len(rows)))
+        return out
+    keep, dele, chg = [], [], []
+    for r, (go, q) in zip(rows, decisions):
+        q = round(float(q or 0), 3)
+        if go and q > 0:
+            keep.append((r, q))
+            if abs(q - r["qty"]) > 0.0005:
+                chg.append((r, q))
+        else:
+            dele.append(r)
+    bad = [r["bc"] for r, _q in keep if r["bad"]]
+    if bad:
+        P.append(u"ШК не из 6-14 цифр (в ТСД не загрузить): %s - снимите галочку и внесите вручную" % u", ".join(bad))
+    if not keep:
+        P.append(u"Ни одна строка не оставлена: ТСД пустой, не пишу")
+    if P:
+        return out
+    agg = {}
+    for r, q in keep:
+        agg[r["bc"]] = round(agg.get(r["bc"], 0.0) + q, 3)
+    day = day or date.today()
+    snd, rcv = rz.safe_name(wbi.get("sender") or u"Отправитель"), rz.safe_name(wbi.get("receiver") or u"Получатель")
+    out_dir = os.path.join(dirs.out, day.strftime("%Y-%m-%d"), snd, WB_PREFIX + datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+    os.makedirs(out_dir, exist_ok=True)
+    out["out_dir"] = out_dir
+    txt = os.path.join(out_dir, rcv + u".txt")
+    ir = pd.DataFrame({"bc": list(agg), "qty": list(agg.values()), "step": 1.0, "is_weight": False})
+    rz.write_shop_txt(txt, ir)
+    out["txt"] = txt
+    got = _read_txt_dict(txt, P, u"новый ТСД")
+    if got != agg:
+        P.append(u"новый ТСД: после записи не совпал с отмеченным, расхождений %d" % len(set(agg.items()) ^ set(got.items())))
+    s_keep = round(sum(q * (r["price"] or 0.0) for r, q in keep), 2)
+    s_del = round(sum(r["sum"] or 0.0 for r in dele), 2)
+    out["stats"] = {"rows": len(rows), "keep": len(keep), "removed": len(dele), "changed": len(chg), "lines": len(agg),
+                    "keep_qty": round(sum(q for _r, q in keep), 3), "keep_sum": s_keep, "del_sum": s_del}
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_WB_SUM
+    for a in ((u"Накладная", os.path.basename(wbi.get("path", u""))), (u"Заголовок", wbi.get("title", u"")),
+              (u"Отправитель", wbi.get("sender", u"")), (u"Получатель", wbi.get("receiver", u"")),
+              (u"Строк в накладной", len(rows), wbi.get("tot_qty"), wbi.get("tot_sum")),
+              (u"Едет (новая накладная)", len(keep), out["stats"]["keep_qty"], s_keep),
+              (u"  из них количество изменено", len(chg)),
+              (u"Убрано - остаётся на магазине", len(dele), round(sum(r["qty"] for r in dele), 3), s_del),
+              (u"Строк в ТСД", len(agg)), (u"Файл ТСД", txt), (), (WB_ORDER_NOTE,)):
+        ws.append(list(a))
+    _fit_widths(ws)
+    for title, hdr, data in (
+            (SHEET_WB_KEEP, (u"Штрих-код", u"Название товара", u"В накладной", u"Факт", u"Цена роз.", u"Сумма роз. факт"),
+             [(r["bc"], r["name"], r["qty"], q, r["price"], round(q * (r["price"] or 0.0), 2)) for r, q in keep]),
+            (SHEET_WB_DEL, (u"Штрих-код", u"Название товара", u"Количество", u"Цена роз.", u"Сумма роз."),
+             [(r["bc"], r["name"], r["qty"], r["price"], r["sum"]) for r in dele]),
+            (SHEET_WB_CHG, (u"Штрих-код", u"Название товара", u"В накладной", u"Факт", u"Остаётся на магазине"),
+             [(r["bc"], r["name"], r["qty"], q, round(r["qty"] - q, 3)) for r, q in chg])):
+        ws = wb.create_sheet(title)
+        ws.append(list(hdr))
+        for x in data:
+            ws.append(list(x))
+        for row_ in ws.iter_rows(min_row=2, max_col=1):
+            row_[0].number_format = "@"
+        ws.freeze_panes = "A2"
+        _fit_widths(ws)
+    xp = os.path.join(out_dir, u"Сверка накладной " + snd + u".xlsx")
+    try:
+        wb.save(xp)
+        out["xlsx"] = xp
+    except PermissionError:
+        P.append(u"%s занят (закройте в Excel): txt записан" % os.path.basename(xp))
+    out["ok"] = not P
+    return out
+
+
 # ============ ОКНО: входные папки, выбор магазина, лист для распределения ============
 
 HIDDEN_STORES_FILE = u"vyvoz_hidden_stores.csv"
@@ -7923,6 +8182,7 @@ UI_PAGES = {                    # заголовок и пояснение ка�
     "vyvoz": (u"Списки вывоза", u"Что делает: по остатку магазина составляет список товара, который нужно вывезти на Полевая-Склад (лист для печати и файл для ТСД). Порядок: 1) положите свежие выгрузки; 2) проверьте магазин; 3) нажмите «Сформировать списки вывоза»; 4) откройте список в Excel, удалите лишнее и сохраните в «Корректировка_ЮА»."),
     "split": (u"Распределение по точкам", u"Что делает: делит список вывоза на файлы для ТСД по адресам: товар РЦ - на «Полевая-Склад», прямые поставки - на самые сильные торговые точки. Список берётся ТОЛЬКО из папки «Корректировка_ЮА»: правили его в Excel - сохраните туда; правок нет - нажмите «Взять без правок». На следующий день сюда не возвращайтесь - используйте «Подчистка списка»."),
     "upd": (u"Подчистка списка", u"Что делает: убирает из вашего списка и из готовых файлов ТСД товар, который уже пришёл на ЮА (стал ЮА-шным) - его вывозить не нужно. Берётся ваш исправленный лист и готовые файлы; они не меняются. Очищенные копии лежат в папке Обновление_<дата> - в ТСД берите файлы оттуда."),
+    "nakl": (u"Сверка накладной", u"Что делает: по проведённой накладной перемещения собирает новый файл для ТСД. Загрузите накладную (Excel из Торгсофта), снимите галочку «Едет» у того, что осталось на магазине, поправьте «Факт», где количество другое, и нажмите «Сформировать ТСД». Старую накладную удалите в Торгсофте, новую создайте из этого ТСД. Убранный товар появится в остатке магазина после удаления старой накладной: «Инвентаризацию ЮА» стройте по выгрузке, снятой после этого."),
     "fin": (u"Инвентаризация ЮА (финал)", u"Выгрузку Family снимайте ПОСЛЕ проведения вывоза. Всё, что осталось на полке, кроме кулинарии и штучных, идёт в файл инвентаризации ЮА с теми ШК, которые знает ЮА. Ваши правки списка вывоза здесь не нужны: файл строится по факту остатка."),
     "serv": (u"Сервис", u"Проверка программы и быстрый доступ к папкам."),
     "log": (u"Журнал", u"Подробный отчёт по всем действиям за сеанс."),
